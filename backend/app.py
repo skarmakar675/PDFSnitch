@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import io
 import logging
 import os
@@ -13,13 +14,18 @@ from pathlib import Path
 from typing import Iterable
 
 import fitz
+from docx import Document
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from PIL import Image, UnidentifiedImageError
 from pypdf import PdfReader, PdfWriter
+from reportlab.lib import colors
 from reportlab.lib.colors import Color
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.pdfgen import canvas
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 logger = logging.getLogger("pdfsnitch")
 
@@ -30,6 +36,7 @@ TEMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 PDF_EXTENSIONS = {".pdf"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+DOCX_EXTENSIONS = {".docx"}
 
 app = FastAPI(title="PDFSnitch API", version="1.0.0")
 origins = [item.strip() for item in os.getenv(
@@ -87,12 +94,21 @@ async def read_upload(upload: UploadFile, allowed: set[str]) -> tuple[bytes, str
                     raise ValueError("No pages")
             except Exception as exc:
                 raise HTTPException(422, "The PDF is damaged, empty, or password protected.") from exc
-        else:
+        elif extension in IMAGE_EXTENSIONS:
             try:
                 with Image.open(upload_path) as image:
                     image.verify()
             except (UnidentifiedImageError, OSError) as exc:
                 raise HTTPException(415, "The uploaded file is not a valid image.") from exc
+        elif extension == ".docx":
+            if not data.startswith(b"PK"):
+                raise HTTPException(415, "The uploaded file is not a valid DOCX file.")
+            try:
+                document = Document(upload_path)
+                if not document.paragraphs and not document.tables:
+                    raise ValueError("No readable content")
+            except Exception as exc:
+                raise HTTPException(422, "The Word document is damaged, empty, or unsupported. Please upload a .docx file.") from exc
     return data, filename
 
 
@@ -137,6 +153,83 @@ def zip_files(entries: Iterable[tuple[str, bytes]]) -> bytes:
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         for filename, data in entries:
             archive.writestr(filename, data)
+    return output.getvalue()
+
+
+def docx_to_pdf_bytes(data: bytes) -> bytes:
+    source = Document(io.BytesIO(data))
+    output = io.BytesIO()
+    pdf = SimpleDocTemplate(
+        output,
+        pagesize=letter,
+        rightMargin=42,
+        leftMargin=42,
+        topMargin=48,
+        bottomMargin=48,
+        title="PDFSnitch Word conversion",
+    )
+    styles = getSampleStyleSheet()
+    story = []
+
+    for paragraph in source.paragraphs:
+        text = paragraph.text.strip()
+        if not text:
+            story.append(Spacer(1, 8))
+            continue
+        style_name = "Heading1" if paragraph.style and "Heading" in paragraph.style.name else "BodyText"
+        story.append(Paragraph(html.escape(text), styles[style_name]))
+        story.append(Spacer(1, 8))
+
+    for table in source.tables:
+        rows = []
+        for row in table.rows:
+            rows.append([Paragraph(html.escape(cell.text.strip() or " "), styles["BodyText"]) for cell in row.cells])
+        if rows:
+            story.append(Spacer(1, 10))
+            table_node = Table(rows, repeatRows=1)
+            table_node.setStyle(TableStyle([
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#bfd8d2")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8fff8")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]))
+            story.append(table_node)
+            story.append(Spacer(1, 12))
+
+    if not story:
+        story.append(Paragraph("No readable text found in this Word document.", styles["BodyText"]))
+    pdf.build(story)
+    return output.getvalue()
+
+
+def pdf_to_docx_bytes(data: bytes) -> bytes:
+    document = fitz.open(stream=data, filetype="pdf")
+    try:
+        output_doc = Document()
+        output_doc.add_heading("Converted from PDF", level=1)
+        found_text = False
+        for page_index, page in enumerate(document, start=1):
+            if page_index > 1:
+                output_doc.add_page_break()
+            output_doc.add_heading(f"Page {page_index}", level=2)
+            text = page.get_text("text").strip()
+            if not text:
+                output_doc.add_paragraph("[No selectable text found on this page.]")
+                continue
+            found_text = True
+            for block in re.split(r"\n{2,}", text):
+                clean = " ".join(line.strip() for line in block.splitlines() if line.strip())
+                if clean:
+                    output_doc.add_paragraph(clean)
+        if not found_text:
+            output_doc.add_paragraph("No selectable text found. This PDF may be scanned images; OCR is not enabled.")
+    finally:
+        document.close()
+    output = io.BytesIO()
+    output_doc.save(output)
     return output.getvalue()
 
 
@@ -235,6 +328,24 @@ async def images_to_pdf(files: list[UploadFile] = File(...)):
     finally:
         for image in images:
             image.close()
+
+
+@app.post("/api/word-to-pdf")
+async def word_to_pdf(file: UploadFile = File(...)):
+    data, filename = await read_upload(file, DOCX_EXTENSIONS)
+    converted = docx_to_pdf_bytes(data)
+    return attachment(converted, f"{safe_stem(filename)}.pdf", "application/pdf")
+
+
+@app.post("/api/pdf-to-word")
+async def pdf_to_word(file: UploadFile = File(...)):
+    data, filename = await read_upload(file, PDF_EXTENSIONS)
+    converted = pdf_to_docx_bytes(data)
+    return attachment(
+        converted,
+        f"{safe_stem(filename)}.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
 
 
 @app.post("/api/compress")

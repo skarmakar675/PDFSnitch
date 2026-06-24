@@ -29,6 +29,8 @@ const tools = [
   { slug: 'rotate', name: 'Rotate PDF', desc: 'Turn individual pages or the whole document.', icon: RotateCw, accept: '.pdf' },
   { slug: 'pdf-to-images', name: 'PDF to Images', desc: 'Export crisp PNG or JPG files.', icon: FileImage, accept: '.pdf' },
   { slug: 'images-to-pdf', name: 'Images to PDF', desc: 'Build one PDF from JPG, PNG or WebP.', icon: ImagePlus, accept: 'image/png,image/jpeg,image/webp', multiple: true },
+  { slug: 'word-to-pdf', name: 'Word to PDF', desc: 'Convert DOCX documents into downloadable PDFs.', icon: FileText, accept: '.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+  { slug: 'pdf-to-word', name: 'PDF to Word', desc: 'Extract readable PDF text into a DOCX file.', icon: FileOutput, accept: '.pdf' },
   { slug: 'delete-pages', name: 'Delete PDF Pages', desc: 'Remove selected pages and keep the rest.', icon: Trash2, accept: '.pdf' },
   { slug: 'watermark', name: 'Watermark', desc: 'Add controlled text marks across pages.', icon: FileOutput, accept: '.pdf' },
   { slug: 'protect', name: 'Protect PDF', desc: 'Lock sensitive documents with a password.', icon: FileLock2, accept: '.pdf' },
@@ -326,10 +328,12 @@ function PdfFilePreview({ file }) {
 
 function PreviewItem({ file, onRemove }) {
   const isImage = file.type.startsWith('image/')
+  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+  const isWord = file.name.toLowerCase().endsWith('.docx')
 
   return <article className="preview-item">
-    <div className="preview-item__media">{isImage ? <ImageFilePreview file={file} /> : <PdfFilePreview file={file} />}</div>
-    <div className="preview-item__info"><strong title={file.name}>{file.name}</strong><span>{formatSize(file.size)} · {isImage ? 'Image' : 'PDF document'}</span></div>
+    <div className="preview-item__media">{isImage ? <ImageFilePreview file={file} /> : isPdf ? <PdfFilePreview file={file} /> : <div className="document-file-preview"><FileText /><strong>{isWord ? 'DOCX' : 'FILE'}</strong><span>Ready to convert</span></div>}</div>
+    <div className="preview-item__info"><strong title={file.name}>{file.name}</strong><span>{formatSize(file.size)} · {isImage ? 'Image' : isWord ? 'Word document' : 'PDF document'}</span></div>
     <button type="button" onClick={onRemove} aria-label={`Remove ${file.name}`}><Trash2 /></button>
   </article>
 }
@@ -365,7 +369,7 @@ function PagePreviewGrid({ preview, loading, selectedPages, onToggle, selectable
 function SiteFooter() {
   return <footer><AdSlot placement="footer" className="ad-slot--footer" /><div className="container footer-grid">
     <div className="footer-brand"><Brand dark /><p>Reliable PDF tools with secure temporary processing.</p><span><ShieldCheck size={16} />Temporary files are automatically deleted</span></div>
-    <div className="footer-column"><h3>Popular tools</h3><Link to="/compress">Compress PDF</Link><Link to="/merge">Merge PDFs</Link><Link to="/split">Split PDF</Link><Link to="/pdf-to-images">PDF to Images</Link></div>
+    <div className="footer-column"><h3>Popular tools</h3><Link to="/compress">Compress PDF</Link><Link to="/merge">Merge PDFs</Link><Link to="/split">Split PDF</Link><Link to="/pdf-to-images">PDF to Images</Link><Link to="/word-to-pdf">Word to PDF</Link><Link to="/pdf-to-word">PDF to Word</Link></div>
     <div className="footer-column"><h3>More tools</h3><Link to="/rotate">Rotate PDF</Link><Link to="/watermark">Watermark</Link><Link to="/protect">Protect PDF</Link><Link to="/unlock">Unlock PDF</Link></div>
     <div className="footer-column"><h3>PDFSnitch</h3><Link to="/about">About</Link><Link to="/privacy">Privacy policy</Link><Link to="/terms">Terms of service</Link><Link to="/">All tools</Link></div>
   </div><div className="container footer-bottom"><span>© 2026 PDFSnitch. All rights reserved.</span><span>Validated uploads · Automatic cleanup · Made with care in <b>India.</b></span></div></footer>
@@ -377,6 +381,8 @@ function ToolControls({ slug, options, update }) {
   if (slug === 'rotate') return <div className="tool-config"><h2>Rotation</h2><div className="config-row">{[['-90', '90° left'], ['90', '90° right'], ['180', '180°']].map(([value, label]) => <button className={options.degrees === value ? 'config-choice is-active' : 'config-choice'} type="button" onClick={() => update('degrees', value)} key={value}>{label}</button>)}</div><p>Rotation is applied to every page.</p></div>
   if (slug === 'pdf-to-images') return <div className="tool-config"><h2>Image export</h2><div className="config-row"><button className={options.format === 'png' ? 'config-choice is-active' : 'config-choice'} type="button" onClick={() => update('format', 'png')}>PNG</button><button className={options.format === 'jpg' ? 'config-choice is-active' : 'config-choice'} type="button" onClick={() => update('format', 'jpg')}>JPG</button></div><label>Resolution<select className="text-field" value={options.dpi} onChange={event => update('dpi', event.target.value)}><option value="72">72 ppi</option><option value="150">150 ppi</option><option value="300">300 ppi</option></select></label></div>
   if (slug === 'images-to-pdf') return <div className="tool-config"><h2>PDF output</h2><p>Images are kept in the selected order and converted at high quality.</p></div>
+  if (slug === 'word-to-pdf') return <div className="tool-config"><h2>Word conversion</h2><p>Upload a .docx file. The backend converts readable text and basic tables into a PDF.</p></div>
+  if (slug === 'pdf-to-word') return <div className="tool-config"><h2>Word output</h2><p>Readable PDF text is extracted page-by-page into a downloadable .docx file. Scanned image PDFs need OCR and may contain little text.</p></div>
   if (slug === 'delete-pages') return <div className="tool-config"><h2>Pages to delete</h2><p>{options.pages.length ? `${options.pages.length} page${options.pages.length > 1 ? 's' : ''} selected: ${options.pages.join(', ')}` : 'Select pages in the preview above.'}</p></div>
   if (slug === 'watermark') return <div className="tool-config"><h2>Watermark settings</h2><input className="text-field" aria-label="Watermark text" value={options.text} onChange={event => update('text', event.target.value)} placeholder="Watermark text" /><label>Opacity: {options.opacity}%<input type="range" min="10" max="100" value={options.opacity} onChange={event => update('opacity', event.target.value)} /></label></div>
   if (slug === 'protect') return <div className="tool-config"><h2>Set a password</h2><input className="text-field" type="password" aria-label="Password" value={options.password} onChange={event => update('password', event.target.value)} placeholder="At least 6 characters" /><input className="text-field" type="password" aria-label="Confirm password" value={options.confirmPassword} onChange={event => update('confirmPassword', event.target.value)} placeholder="Confirm password" /></div>
@@ -404,7 +410,7 @@ function ToolPage({ slug }) {
   if (!tool) return <NotFound />
   const Icon = tool.icon
   const choose = () => inputRef.current?.click()
-  const previewRoutes = ['split', 'delete-pages', 'pdf-to-images']
+  const previewRoutes = ['split', 'delete-pages', 'pdf-to-images', 'pdf-to-word']
   const loadPreview = async file => {
     if (!file || !previewRoutes.includes(slug)) return
     setPreviewLoading(true)
