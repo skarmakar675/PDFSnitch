@@ -47,6 +47,14 @@ The backend start command is:
 uvicorn backend.app:app --host 0.0.0.0 --port $PORT
 ```
 
+If you created Render manually and set **Root Directory** to `backend`, use this start command instead:
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port $PORT
+```
+
+Both start styles are supported by the code now.
+
 The health check URL is:
 
 ```text
@@ -243,6 +251,33 @@ Checklist:
 - Browser console has no CORS errors.
 
 ## Common problems
+
+### Render installs Python 3.14
+
+If your Render log shows paths like:
+
+```text
+python/Python-3.14
+cp314
+```
+
+set this in Render:
+
+```env
+PYTHON_VERSION=3.12.4
+```
+
+This project also includes `.python-version` files with:
+
+```text
+3.12.4
+```
+
+After changing Python version, use:
+
+```text
+Manual Deploy > Clear build cache & deploy
+```
 
 ### Frontend says it cannot reach backend
 

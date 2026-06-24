@@ -371,7 +371,10 @@ async def unlock_pdf(file: UploadFile = File(...), password: str = Form(...)):
         raise HTTPException(422, "Unable to unlock this PDF.") from exc
 
 
-from .admin_api import init_admin_storage, router as admin_router
+try:
+    from .admin_api import init_admin_storage, router as admin_router
+except ImportError:
+    from admin_api import init_admin_storage, router as admin_router
 
 init_admin_storage()
 app.include_router(admin_router)
