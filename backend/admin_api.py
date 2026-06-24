@@ -52,7 +52,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "youtube_url": "",
     "linkedin_url": "",
     "twitter_url": "",
-    "api_base_url": "http://127.0.0.1:8000",
+    "api_base_url": "https://pdfsnitch-api-4z7h.onrender.com",
     "compress_endpoint": "/api/compress",
     "health_endpoint": "/api/health",
     "request_timeout": "60",
@@ -67,7 +67,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "download_button_enabled": "true",
     "temporary_notice_enabled": "true",
     "success_message": "Your PDF is ready to download.",
-    "error_message": "Cannot reach the PDF processing service. Start the backend and try again.",
+    "error_message": "Cannot reach the PDF processing service. try again Sometime.",
     "seo_title": "PDFSnitch",
     "seo_description": "Compress PDF files online.",
     "seo_keywords": "pdf compressor, compress pdf, reduce pdf size",
@@ -302,7 +302,7 @@ def public_api_base_url(settings: dict[str, Any], request: Request | None = None
         return configured
     if request:
         return str(request.base_url).rstrip("/")
-    return configured or "http://127.0.0.1:8000"
+    return configured or "https://pdfsnitch-api-4z7h.onrender.com"
 
 
 def public_asset_url(value: str, api_base_url: str) -> str:

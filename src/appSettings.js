@@ -1,6 +1,6 @@
 import { createContext } from 'react'
 
-export const BACKEND_ORIGIN = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
+export const BACKEND_ORIGIN = (import.meta.env.VITE_API_URL || 'https://pdfsnitch-api-4z7h.onrender.com').replace(/\/$/, '')
 
 export const defaultPublicSettings = {
   siteTitle: 'PDFSnitch',
@@ -20,7 +20,7 @@ export const defaultPublicSettings = {
   defaultMultimedia: 'discard',
   defaultFonts: 'unchanged',
   successMessage: 'Your PDF is ready to download.',
-  errorMessage: 'Cannot reach the PDF processing service. Start the backend and try again.',
+  errorMessage: 'Cannot reach the PDF processing service. try again Sometime.',
   seo: {
     title: 'PDFSnitch',
     description: 'Compress PDF files online.',

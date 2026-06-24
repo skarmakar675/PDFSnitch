@@ -1,7 +1,7 @@
 const getApiBase = () => (
   window.PDFC_SETTINGS?.apiBaseUrl ||
   import.meta.env.VITE_API_URL ||
-  'http://127.0.0.1:8000'
+  'https://pdfsnitch-api-4z7h.onrender.com'
 ).replace(/\/$/, '')
 
 const getCompressEndpoint = () => window.PDFC_SETTINGS?.compressEndpoint || '/api/compress'
@@ -17,7 +17,7 @@ const request = async (path, formData, responseType = 'blob') => {
   try {
     response = await fetch(`${getApiBase()}${path}`, { method: 'POST', body: formData })
   } catch {
-    throw new Error('Cannot reach the PDF processing service. Start the backend and try again.')
+    throw new Error(window.PDFC_SETTINGS?.errorMessage || 'Cannot reach the PDF processing service. try again Sometime.')
   }
   if (!response.ok) {
     let message = 'Processing failed. Check the file and try again.'
