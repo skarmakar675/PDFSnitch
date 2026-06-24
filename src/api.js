@@ -1,7 +1,7 @@
 const getApiBase = () => (
   window.PDFC_SETTINGS?.apiBaseUrl ||
   import.meta.env.VITE_API_URL ||
-  'https://pdfsnitch-api-4z7h.onrender.com'
+  'https://pdfsnitch-izhk.onrender.com'
 ).replace(/\/$/, '')
 
 const getCompressEndpoint = () => window.PDFC_SETTINGS?.compressEndpoint || '/api/compress'

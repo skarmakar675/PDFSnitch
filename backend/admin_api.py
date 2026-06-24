@@ -54,7 +54,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "youtube_url": "",
     "linkedin_url": "",
     "twitter_url": "",
-    "api_base_url": "https://pdfsnitch-api-4z7h.onrender.com",
+    "api_base_url": "https://pdfsnitch-izhk.onrender.com",
     "compress_endpoint": "/api/compress",
     "health_endpoint": "/api/health",
     "request_timeout": "60",
@@ -304,7 +304,7 @@ def public_api_base_url(settings: dict[str, Any], request: Request | None = None
         return configured
     if request:
         return str(request.base_url).rstrip("/")
-    return configured or "https://pdfsnitch-api-4z7h.onrender.com"
+    return configured or "https://pdfsnitch-izhk.onrender.com"
 
 
 def public_asset_url(value: str, api_base_url: str) -> str:

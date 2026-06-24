@@ -483,7 +483,7 @@ function DocumentationPage() {
     ['How to login admin panel', 'Open /admin/login and use the username and password configured in backend/.env. Change ADMIN_USERNAME, ADMIN_PASSWORD and ADMIN_SECRET_KEY before real deployment.'],
     ['How to change logo', 'Open Branding, upload a logo, then save. The public app loads the logo from /api/public/settings.'],
     ['How to check visitors', 'Open Analytics. Page views and compressor events are tracked anonymously with a local browser visitor ID.'],
-    ['How to setup backend URL', 'Open Backend/API settings and set API Base URL to your FastAPI backend, for example https://pdfsnitch-api-4z7h.onrender.com.'],
+    ['How to setup backend URL', 'Open Backend/API settings and set API Base URL to your FastAPI backend, for example https://pdfsnitch-izhk.onrender.com.'],
     ['How to setup AdSense', 'Open AdSense Monetization, enter Publisher ID, enable monetization, choose Auto/Manual/Hybrid, then configure ads.txt. Localhost uses placeholders.'],
     ['Safe ad placements', 'Use below intro, below tool, after result, footer, or desktop sidebar. Never put ads in the upload box, progress area, or near compress/download buttons.'],
     ['How to setup Search Console', 'Paste only the verification content or tag value in Search Console settings. The React app injects meta tags into document head.'],

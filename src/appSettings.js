@@ -1,6 +1,6 @@
 import { createContext } from 'react'
 
-export const BACKEND_ORIGIN = (import.meta.env.VITE_API_URL || 'https://pdfsnitch-api-4z7h.onrender.com').replace(/\/$/, '')
+export const BACKEND_ORIGIN = (import.meta.env.VITE_API_URL || 'https://pdfsnitch-izhk.onrender.com').replace(/\/$/, '')
 
 export const defaultPublicSettings = {
   siteTitle: 'PDFSnitch',

@@ -5,7 +5,7 @@
   "rewrites": [
     {
       "source": "/ads.txt",
-      "destination": "https://pdfsnitch-api-4z7h.onrender.com/ads.txt"
+      "destination": "https://pdfsnitch-izhk.onrender.com/ads.txt"
     },
     {
       "source": "/(.*)",

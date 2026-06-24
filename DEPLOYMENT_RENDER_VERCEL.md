@@ -74,7 +74,7 @@ The health check URL is:
 After deployment, your backend URL will look like:
 
 ```text
-https://pdfsnitch-api-4z7h.onrender.com
+https://pdfsnitch-izhk.onrender.com
 ```
 
 If Render gives a different URL, use that real URL in the next steps.
@@ -91,7 +91,7 @@ Set these values:
 
 ```env
 PDFSNITCH_MAX_UPLOAD_MB=50
-PDFSNITCH_PUBLIC_API_BASE_URL=https://pdfsnitch-api-4z7h.onrender.com
+PDFSNITCH_PUBLIC_API_BASE_URL=https://pdfsnitch-izhk.onrender.com
 PDFSNITCH_FRONTEND_ORIGINS=https://pdfsnitch.vercel.app
 
 PDFSNITCH_DATA_DIR=/var/data
@@ -158,7 +158,7 @@ If you change Render to a free service without disk, the backend can still run, 
 Open this in your browser:
 
 ```text
-https://pdfsnitch-api-4z7h.onrender.com/api/health
+https://pdfsnitch-izhk.onrender.com/api/health
 ```
 
 Expected response:
@@ -170,7 +170,7 @@ Expected response:
 Also test:
 
 ```text
-https://pdfsnitch-api-4z7h.onrender.com/api/public/settings
+https://pdfsnitch-izhk.onrender.com/api/public/settings
 ```
 
 Make sure `apiBaseUrl` shows your Render URL, not `127.0.0.1`.
@@ -196,14 +196,14 @@ dist
 7. Add environment variable:
 
 ```env
-VITE_API_URL=https://pdfsnitch-api-4z7h.onrender.com
+VITE_API_URL=https://pdfsnitch-izhk.onrender.com
 ```
 
 8. Deploy.
 
 Important for Google AdSense:
 
-- `vercel.json` rewrites `/ads.txt` to `https://pdfsnitch-api-4z7h.onrender.com/ads.txt`.
+- `vercel.json` rewrites `/ads.txt` to `https://pdfsnitch-izhk.onrender.com/ads.txt`.
 - If your Render backend URL is different, edit `vercel.json` and replace that URL before deploying.
 - Google checks ads.txt on your frontend domain, for example `https://pdfsnitch.vercel.app/ads.txt`.
 
@@ -248,7 +248,7 @@ Admin > Backend/API
 Set:
 
 ```text
-API Base URL: https://pdfsnitch-api-4z7h.onrender.com
+API Base URL: https://pdfsnitch-izhk.onrender.com
 Compress endpoint: /api/compress
 Health endpoint: /api/health
 ```
