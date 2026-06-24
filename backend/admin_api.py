@@ -463,7 +463,7 @@ def send_otp_email(email: str, code: str) -> None:
     message["To"] = email
     message.set_content(f"Your PDFSnitch admin login OTP is: {code}\n\nThis code expires in 10 minutes. If you did not request it, ignore this email.")
     try:
-        with smtplib.SMTP(host, port, timeout=15) as server:
+        with smtplib.SMTP(host, port, timeout=30) as server:
             if use_tls:
                 server.starttls()
             if username and password:

@@ -35,12 +35,12 @@ export async function adminRequest(path, options = {}) {
   }
   if (adminAuth.token) headers.set('Authorization', `Bearer ${adminAuth.token}`)
   const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs || 15000)
+  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs || 30000)
   try {
     const response = await fetch(`${BACKEND_ORIGIN}${path}`, { ...options, headers, signal: controller.signal })
     return parseResponse(response)
   } catch (error) {
-    if (error.name === 'AbortError') throw new Error('Backend did not respond. Restart the backend server and try again.')
+    if (error.name === 'AbortError') throw new Error('Backend is taking too long to respond. If OTP is enabled, wait one minute and try again.')
     throw error
   } finally {
     window.clearTimeout(timeout)
@@ -51,6 +51,7 @@ export const loginAdmin = async (username, password) => {
   const payload = await adminRequest('/api/admin/login', {
     method: 'POST',
     body: JSON.stringify({ username, password }),
+    timeoutMs: 60000,
   })
   if (payload.token) adminAuth.token = payload.token
   return payload
