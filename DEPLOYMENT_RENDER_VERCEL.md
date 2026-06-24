@@ -55,6 +55,16 @@ uvicorn app:app --host 0.0.0.0 --port $PORT
 
 Both start styles are supported by the code now.
 
+For scanned PDF to Word OCR, deploy the backend as **Docker** instead of native Python:
+
+```text
+Root Directory: backend
+Environment: Docker
+Dockerfile Path: ./Dockerfile
+```
+
+The Docker backend installs Tesseract OCR, which is required for scanned/image-based PDF pages.
+
 The health check URL is:
 
 ```text
@@ -89,6 +99,8 @@ PDFSNITCH_UPLOAD_DIR=/var/data/uploads
 PDFSNITCH_MEDIA_DIR=/var/data/media
 PDFSNITCH_EXPORT_DIR=/var/data/exports
 PDFSNITCH_TEMP_DIR=/tmp/pdfsnitch
+PDFSNITCH_OCR_LANG=eng
+PDFSNITCH_OCR_DPI=200
 
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=your-strong-admin-password

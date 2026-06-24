@@ -205,32 +205,94 @@ def docx_to_pdf_bytes(data: bytes) -> bytes:
     return output.getvalue()
 
 
-def pdf_to_docx_bytes(data: bytes) -> bytes:
+def normalized_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def page_has_selectable_text(page: fitz.Page) -> bool:
+    text = normalized_text(page.get_text("text"))
+    return len(text) >= 12
+
+
+def extract_page_blocks(page: fitz.Page, textpage=None) -> list[str]:
+    blocks = page.get_text("blocks", sort=True, textpage=textpage) if textpage else page.get_text("blocks", sort=True)
+    content: list[str] = []
+    for block in blocks:
+        if len(block) < 5:
+            continue
+        text = str(block[4] or "").strip()
+        if not text:
+            continue
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if lines:
+            content.append("\n".join(lines))
+    if not content:
+        fallback = page.get_text("text", textpage=textpage).strip() if textpage else page.get_text("text").strip()
+        if fallback:
+            content.append(fallback)
+    return content
+
+
+def ocr_page_blocks(page: fitz.Page) -> tuple[list[str], str | None]:
+    language = os.getenv("PDFSNITCH_OCR_LANG", "eng").strip() or "eng"
+    dpi = int(os.getenv("PDFSNITCH_OCR_DPI", "200"))
+    try:
+        textpage = page.get_textpage_ocr(language=language, dpi=max(100, min(dpi, 300)), full=True)
+        return extract_page_blocks(page, textpage=textpage), None
+    except Exception as exc:
+        logger.warning("OCR failed on page %s: %s", page.number + 1, exc)
+        return [], str(exc)
+
+
+def add_blocks_to_docx(output_doc: Document, blocks: list[str], source: str) -> None:
+    if not blocks:
+        output_doc.add_paragraph(f"[{source} could not detect clear text on this page.]")
+        return
+    for block in blocks:
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        first = lines[0]
+        if len(lines) == 1 and len(first) <= 90 and not first.endswith("."):
+            output_doc.add_heading(first, level=3)
+            continue
+        paragraph = output_doc.add_paragraph()
+        for index, line in enumerate(lines):
+            if index:
+                paragraph.add_run().add_break()
+            paragraph.add_run(line)
+
+
+def pdf_to_docx_bytes(data: bytes) -> tuple[bytes, dict[str, Any]]:
     document = fitz.open(stream=data, filetype="pdf")
+    metadata = {"text_pages": [], "ocr_pages": [], "ocr_failed_pages": [], "page_count": 0}
     try:
         output_doc = Document()
         output_doc.add_heading("Converted from PDF", level=1)
-        found_text = False
+        metadata["page_count"] = document.page_count
         for page_index, page in enumerate(document, start=1):
             if page_index > 1:
                 output_doc.add_page_break()
             output_doc.add_heading(f"Page {page_index}", level=2)
-            text = page.get_text("text").strip()
-            if not text:
-                output_doc.add_paragraph("[No selectable text found on this page.]")
+            if page_has_selectable_text(page):
+                metadata["text_pages"].append(page_index)
+                add_blocks_to_docx(output_doc, extract_page_blocks(page), "PDF text extraction")
                 continue
-            found_text = True
-            for block in re.split(r"\n{2,}", text):
-                clean = " ".join(line.strip() for line in block.splitlines() if line.strip())
-                if clean:
-                    output_doc.add_paragraph(clean)
-        if not found_text:
-            output_doc.add_paragraph("No selectable text found. This PDF may be scanned images; OCR is not enabled.")
+            metadata["ocr_pages"].append(page_index)
+            blocks, ocr_error = ocr_page_blocks(page)
+            if ocr_error:
+                metadata["ocr_failed_pages"].append(page_index)
+            add_blocks_to_docx(output_doc, blocks, "OCR")
     finally:
         document.close()
+    if metadata["ocr_pages"] and len(metadata["ocr_failed_pages"]) == len(metadata["ocr_pages"]):
+        raise HTTPException(
+            503,
+            "OCR is not available on the backend server. Deploy the backend with Tesseract OCR enabled, then try this scanned PDF again.",
+        )
     output = io.BytesIO()
     output_doc.save(output)
-    return output.getvalue()
+    return output.getvalue(), metadata
 
 
 @app.get("/api/health")
@@ -340,11 +402,18 @@ async def word_to_pdf(file: UploadFile = File(...)):
 @app.post("/api/pdf-to-word")
 async def pdf_to_word(file: UploadFile = File(...)):
     data, filename = await read_upload(file, PDF_EXTENSIONS)
-    converted = pdf_to_docx_bytes(data)
+    converted, metadata = pdf_to_docx_bytes(data)
+    headers = {
+        "X-PDFSNITCH-Text-Pages": ",".join(map(str, metadata["text_pages"])),
+        "X-PDFSNITCH-OCR-Pages": ",".join(map(str, metadata["ocr_pages"])),
+        "X-PDFSNITCH-OCR-Failed-Pages": ",".join(map(str, metadata["ocr_failed_pages"])),
+        "Access-Control-Expose-Headers": "Content-Disposition, X-PDFSNITCH-Text-Pages, X-PDFSNITCH-OCR-Pages, X-PDFSNITCH-OCR-Failed-Pages",
+    }
     return attachment(
         converted,
         f"{safe_stem(filename)}.docx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers,
     )
 
 

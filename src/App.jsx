@@ -473,6 +473,7 @@ function ToolPage({ slug }) {
     }
   }
   const download = () => { downloadBlob(result?.blob, result?.filename); trackEvent('download_click', { filename: result?.filename, tool: slug }); setDirty(false) }
+  const processingLabel = slug === 'pdf-to-word' ? 'Reading PDF content?' : 'Processing securely?'
   return <div className="tool-page"><ToolHeader /><main className="tool-page__main container">
     <input ref={inputRef} className="sr-only" type="file" accept={tool.accept} multiple={tool.multiple} onChange={onFiles} aria-label={`Choose files for ${tool.name}`} />
     <div className="tool-page__title"><Icon /><h1>{tool.name}</h1><p>{tool.desc}</p></div>
@@ -481,6 +482,7 @@ function ToolPage({ slug }) {
       <PreviewSection files={files} onRemove={removeFile} onAdd={choose} mergeMode={slug === 'merge'} />
       {previewRoutes.includes(slug) ? <PagePreviewGrid preview={preview} loading={previewLoading} selectedPages={options.pages} onToggle={togglePage} selectable={slug === 'delete-pages'} /> : null}
       <ToolControls slug={slug} options={options} update={updateOptions} />
+      {status === 'processing' && slug === 'pdf-to-word' ? <div className="tool-message tool-message--info" role="status">Reading PDF content? Running OCR on scanned pages when required. Please wait until the Word file is ready.</div> : null}
       {error ? <div className="tool-message tool-message--error" role="alert">{error}</div> : null}
       {resultPreview ? <div className="result-preview"><PagePreviewGrid preview={resultPreview} loading={false} selectedPages={[]} onToggle={() => {}} /><strong>Result preview updated successfully.</strong></div> : null}
       <div className="tool-action"><button className="btn btn--primary" disabled={!canProcess || status === 'processing'} onClick={process}>{status === 'done' ? <Check /> : status === 'processing' ? <LoaderCircle className="spin-icon" /> : <Icon />}{status === 'processing' ? 'Processing securely…' : status === 'done' ? 'Process again' : slug === 'merge' && files.length < 2 ? 'Add at least 2 PDFs' : slug === 'delete-pages' && !options.pages.length ? 'Select pages to delete' : tool.name}</button>{result ? <button className="btn btn--outline" type="button" onClick={download}><Download />Download {result.filename}</button> : null}<small><ShieldCheck />Temporary files are deleted automatically</small></div>
