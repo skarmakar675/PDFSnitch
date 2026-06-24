@@ -1,0 +1,53 @@
+services:
+  - type: web
+    name: pdfsnitch-api
+    env: python
+    plan: starter
+    region: singapore
+    buildCommand: pip install --upgrade pip && pip install -r backend/requirements.txt
+    startCommand: uvicorn backend.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: pdfsnitch-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.4
+      - key: PDFSNITCH_MAX_UPLOAD_MB
+        value: 50
+      - key: PDFSNITCH_PUBLIC_API_BASE_URL
+        value: https://pdfsnitch-api.onrender.com
+      - key: PDFSNITCH_FRONTEND_ORIGINS
+        value: https://your-vercel-domain.vercel.app,http://localhost:5173,http://127.0.0.1:5173
+      - key: PDFSNITCH_DATA_DIR
+        value: /var/data
+      - key: PDFSNITCH_UPLOAD_DIR
+        value: /var/data/uploads
+      - key: PDFSNITCH_MEDIA_DIR
+        value: /var/data/media
+      - key: PDFSNITCH_EXPORT_DIR
+        value: /var/data/exports
+      - key: PDFSNITCH_TEMP_DIR
+        value: /tmp/pdfsnitch
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_SECRET_KEY
+        generateValue: true
+      - key: ADMIN_OTP_EMAIL
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM_EMAIL
+        sync: false
+      - key: SMTP_USE_TLS
+        value: true

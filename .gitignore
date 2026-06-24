@@ -1,0 +1,29 @@
+# Dependencies and build output
+node_modules/
+dist/
+.vite/
+
+# Local environment files and secrets
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# Local backend runtime data
+backend/data/
+backend/uploads/
+backend/media/
+backend/exports/
+outputs/
+
+# Python cache/test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+pytest-cache-files-*/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
