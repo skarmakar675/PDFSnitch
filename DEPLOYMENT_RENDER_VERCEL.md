@@ -93,6 +93,7 @@ PDFSNITCH_TEMP_DIR=/tmp/pdfsnitch
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=your-strong-admin-password
 ADMIN_SECRET_KEY=your-long-random-secret
+ADMIN_OTP_ENABLED=true
 ADMIN_OTP_EMAIL=your-email@example.com
 ```
 

@@ -432,6 +432,15 @@ def admin_username() -> str:
     return get_setting_value("admin_username", os.getenv("ADMIN_USERNAME", "admin"))
 
 
+def env_truthy(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def admin_otp_enabled() -> bool:
+    setting_enabled = get_setting_value("admin_otp_enabled", "false").lower() in {"1", "true", "yes", "on"}
+    return setting_enabled or env_truthy("ADMIN_OTP_ENABLED")
+
+
 def mask_email(email: str) -> str:
     if "@" not in email:
         return email[:2] + "***"
@@ -453,12 +462,19 @@ def send_otp_email(email: str, code: str) -> None:
     message["From"] = sender
     message["To"] = email
     message.set_content(f"Your PDFSnitch admin login OTP is: {code}\n\nThis code expires in 10 minutes. If you did not request it, ignore this email.")
-    with smtplib.SMTP(host, port, timeout=15) as server:
-        if use_tls:
-            server.starttls()
-        if username and password:
-            server.login(username, password)
-        server.send_message(message)
+    try:
+        with smtplib.SMTP(host, port, timeout=15) as server:
+            if use_tls:
+                server.starttls()
+            if username and password:
+                server.login(username, password)
+            server.send_message(message)
+    except smtplib.SMTPAuthenticationError as exc:
+        raise HTTPException(503, "SMTP login failed. Check your Gmail app password in Render environment variables.") from exc
+    except smtplib.SMTPException as exc:
+        raise HTTPException(503, f"SMTP email failed: {exc}") from exc
+    except OSError as exc:
+        raise HTTPException(503, "Cannot connect to SMTP server. Check SMTP_HOST, SMTP_PORT and SMTP_USE_TLS.") from exc
 
 
 def create_otp_challenge(username: str, email: str) -> dict[str, str]:
@@ -575,7 +591,7 @@ def login(payload: LoginPayload):
     stored_hash = get_setting_value("admin_password_hash", "")
     if not (secrets.compare_digest(payload.username, username) and verify_password(payload.password, stored_hash)):
         raise HTTPException(401, "Invalid username or password.")
-    otp_enabled = get_setting_value("admin_otp_enabled", "false").lower() in {"1", "true", "yes", "on"}
+    otp_enabled = admin_otp_enabled()
     otp_email = get_setting_value("admin_otp_email", os.getenv("ADMIN_OTP_EMAIL", "")).strip()
     if otp_enabled:
         if not otp_email:
@@ -622,7 +638,7 @@ def me(admin: dict[str, Any] = Depends(require_admin)):
 def get_security(_admin: dict[str, Any] = Depends(require_admin)):
     return {
         "username": admin_username(),
-        "otpEnabled": get_setting_value("admin_otp_enabled", "false").lower() in {"1", "true", "yes", "on"},
+        "otpEnabled": admin_otp_enabled(),
         "otpEmail": get_setting_value("admin_otp_email", os.getenv("ADMIN_OTP_EMAIL", "")),
         "smtpConfigured": bool(os.getenv("SMTP_HOST", "").strip() and os.getenv("SMTP_FROM_EMAIL", os.getenv("SMTP_USERNAME", "")).strip()),
     }
