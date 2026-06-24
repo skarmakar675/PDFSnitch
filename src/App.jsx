@@ -269,7 +269,7 @@ function ToolHeader() {
     <Brand />
     <div className="nav__links nav__links--tools">
       <div className={`tools-menu ${toolsOpen ? 'is-open' : ''}`}><button type="button" className="tools-menu__trigger" aria-expanded={toolsOpen} onClick={() => setToolsOpen(value => !value)}>All tools<ChevronRight size={15} /></button>{toolsOpen ? <div className="tools-menu__panel">{tools.map(tool => { const Icon = tool.icon; return <NavLink key={tool.slug} to={`/${tool.slug}`} onClick={() => setToolsOpen(false)}><Icon size={19} /><span>{tool.name}<small>{tool.desc}</small></span></NavLink> })}</div> : null}</div>
-      <NavLink to="/compress">Compress</NavLink><NavLink to="/merge">Merge</NavLink><NavLink to="/split">Split</NavLink><NavLink to="/pdf-to-images">Convert</NavLink>
+      <NavLink to="/compress">Compress</NavLink><NavLink to="/merge">Merge</NavLink><NavLink to="/split">Split</NavLink><NavLink to="/pdf-to-images">PDF to Images</NavLink><NavLink to="/word-to-pdf">Word to PDF</NavLink><NavLink to="/pdf-to-word">PDF to Word</NavLink>
     </div>
     <Link className="btn btn--primary nav__cta" to="/compress">Compress a PDF</Link>
     <button className="menu-btn" aria-label="Toggle navigation" aria-expanded={open} onClick={() => setOpen(value => !value)}>{open ? <X /> : <Menu />}</button>
@@ -602,6 +602,10 @@ function HomePage() {
 
         <section className="tools-section container" id="tools">
           <div className="section-heading"><h2>Every PDF job,<br />handled securely.</h2><p>Pick a tool, process the real file and download the generated result.</p></div>
+          <div className="featured-converters" aria-label="Featured conversion tools">
+            <Link to="/word-to-pdf"><FileText /><span><strong>Word to PDF</strong><small>Convert DOCX documents into downloadable PDFs.</small></span><ArrowRight /></Link>
+            <Link to="/pdf-to-word"><FileOutput /><span><strong>PDF to Word</strong><small>Extract readable PDF text into a DOCX file.</small></span><ArrowRight /></Link>
+          </div>
           <div className="tool-directory">
             {tools.map((tool, i) => { const Icon = tool.icon; return <Link to={`/${tool.slug}`} key={tool.name} className={`tool-row ${i === 0 ? 'tool-row--featured' : ''} ${selectedTool === tool.name ? 'is-selected' : ''}`}><span className="tool-row__icon"><Icon /></span><span><strong>{tool.name}</strong><small>{tool.desc}</small></span><ChevronRight className="tool-row__arrow" /></Link> })}
           </div>
