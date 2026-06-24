@@ -108,6 +108,15 @@ SMTP_FROM_EMAIL=your-email@example.com
 SMTP_USE_TLS=true
 ```
 
+Recommended for Render free services: use Resend API for OTP instead of Gmail SMTP, because free Render web services can block outbound SMTP ports `25`, `465`, and `587`.
+
+```env
+RESEND_API_KEY=your-resend-api-key
+RESEND_FROM_EMAIL=PDFSnitch <onboarding@resend.dev>
+```
+
+If `RESEND_API_KEY` is set, PDFSnitch sends OTP through Resend over HTTPS and ignores SMTP for OTP.
+
 Important:
 
 - Do not put real passwords in GitHub files.

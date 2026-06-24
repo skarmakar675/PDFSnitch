@@ -16,6 +16,8 @@ from email.message import EmailMessage
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+import urllib.error
+import urllib.request
 from urllib.parse import urljoin
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
@@ -449,6 +451,29 @@ def mask_email(email: str) -> str:
 
 
 def send_otp_email(email: str, code: str) -> None:
+    subject = "Your PDFSnitch admin OTP"
+    text = f"Your PDFSnitch admin login OTP is: {code}\n\nThis code expires in 10 minutes. If you did not request it, ignore this email."
+    resend_key = os.getenv("RESEND_API_KEY", "").strip()
+    if resend_key:
+        resend_from = os.getenv("RESEND_FROM_EMAIL", "PDFSnitch <onboarding@resend.dev>").strip()
+        payload = json.dumps({"from": resend_from, "to": [email], "subject": subject, "text": text}).encode()
+        request = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=payload,
+            headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                if response.status >= 400:
+                    raise HTTPException(503, "Resend email API failed. Check RESEND_API_KEY and RESEND_FROM_EMAIL.")
+            return
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "ignore")[:300]
+            raise HTTPException(503, f"Resend email API failed: {detail or exc.reason}") from exc
+        except OSError as exc:
+            raise HTTPException(503, "Cannot connect to Resend email API. Check Render outbound HTTPS/network status.") from exc
+
     host = os.getenv("SMTP_HOST", "").strip()
     port = int(os.getenv("SMTP_PORT", "587"))
     username = os.getenv("SMTP_USERNAME", "").strip()
@@ -458,10 +483,10 @@ def send_otp_email(email: str, code: str) -> None:
     if not host or not sender:
         raise HTTPException(503, "SMTP email is not configured. Add SMTP_HOST and SMTP_FROM_EMAIL in backend/.env, then restart backend.")
     message = EmailMessage()
-    message["Subject"] = "Your PDFSnitch admin OTP"
+    message["Subject"] = subject
     message["From"] = sender
     message["To"] = email
-    message.set_content(f"Your PDFSnitch admin login OTP is: {code}\n\nThis code expires in 10 minutes. If you did not request it, ignore this email.")
+    message.set_content(text)
     try:
         with smtplib.SMTP(host, port, timeout=30) as server:
             if use_tls:
