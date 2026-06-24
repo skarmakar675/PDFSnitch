@@ -82,7 +82,7 @@ Set these values:
 ```env
 PDFSNITCH_MAX_UPLOAD_MB=50
 PDFSNITCH_PUBLIC_API_BASE_URL=https://pdfsnitch-api-4z7h.onrender.com
-PDFSNITCH_FRONTEND_ORIGINS=https://your-vercel-domain.vercel.app
+PDFSNITCH_FRONTEND_ORIGINS=https://pdfsnitch.vercel.app
 
 PDFSNITCH_DATA_DIR=/var/data
 PDFSNITCH_UPLOAD_DIR=/var/data/uploads
@@ -183,7 +183,7 @@ Important for Google AdSense:
 
 - `vercel.json` rewrites `/ads.txt` to `https://pdfsnitch-api-4z7h.onrender.com/ads.txt`.
 - If your Render backend URL is different, edit `vercel.json` and replace that URL before deploying.
-- Google checks ads.txt on your frontend domain, for example `https://your-vercel-domain.vercel.app/ads.txt`.
+- Google checks ads.txt on your frontend domain, for example `https://pdfsnitch.vercel.app/ads.txt`.
 
 ## 7. Update Render CORS after Vercel deploy
 
@@ -212,7 +212,7 @@ Redeploy/restart the Render backend after changing CORS.
 Open:
 
 ```text
-https://your-vercel-domain.vercel.app/admin/login
+https://pdfsnitch.vercel.app/admin/login
 ```
 
 Login with the Render environment username/password.
@@ -294,7 +294,7 @@ Then redeploy Vercel.
 Update Render:
 
 ```env
-PDFSNITCH_FRONTEND_ORIGINS=https://your-vercel-domain.vercel.app
+PDFSNITCH_FRONTEND_ORIGINS=https://pdfsnitch.vercel.app
 ```
 
 Then restart/redeploy backend.

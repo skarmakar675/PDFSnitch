@@ -20,7 +20,7 @@ services:
       - key: PDFSNITCH_PUBLIC_API_BASE_URL
         value: https://pdfsnitch-api-4z7h.onrender.com
       - key: PDFSNITCH_FRONTEND_ORIGINS
-        value: https://your-vercel-domain.vercel.app,http://localhost:5173,http://127.0.0.1:5173
+        value: https://pdfsnitch.vercel.app,http://localhost:5173,http://127.0.0.1:5173
       - key: PDFSNITCH_DATA_DIR
         value: /var/data
       - key: PDFSNITCH_UPLOAD_DIR
