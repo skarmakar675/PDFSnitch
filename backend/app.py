@@ -17,7 +17,7 @@ from typing import Any, Iterable
 
 import fitz
 from docx import Document
-from docx.shared import Inches
+from docx.shared import Inches, Pt
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -394,39 +394,85 @@ def add_blocks_to_docx(output_doc: Document, blocks: list[str], source: str) -> 
             paragraph.add_run(line)
 
 
-def add_page_image_to_docx(output_doc: Document, page: fitz.Page) -> None:
-    with tempfile.TemporaryDirectory(prefix="docx-page-image-", dir=TEMP_ROOT) as directory:
-        image_path = Path(directory) / f"page-{page.number + 1}.png"
-        pixmap = page.get_pixmap(dpi=140, alpha=False, colorspace=fitz.csRGB)
-        pixmap.save(image_path)
-        output_doc.add_paragraph("OCR could not detect clear editable text on this page. The page image is included below so no page is skipped.")
-        output_doc.add_picture(str(image_path), width=Inches(6.2))
+def add_hidden_text_layer(output_doc: Document, blocks: list[str]) -> None:
+    if not blocks:
+        return
+    paragraph = output_doc.add_paragraph()
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.line_spacing = 1
+    run = paragraph.add_run("\n".join(blocks))
+    run.font.hidden = True
+    run.font.size = Pt(1)
+
+
+def add_exact_page_image(output_doc: Document, page: fitz.Page, page_width_inches: float) -> None:
+    render_dpi = int(os.getenv("PDFSNITCH_WORD_IMAGE_DPI", "180"))
+    render_dpi = max(120, min(render_dpi, 260))
+    pixmap = page.get_pixmap(dpi=render_dpi, alpha=False, colorspace=fitz.csRGB)
+    image_stream = io.BytesIO(pixmap.tobytes("png"))
+    paragraph = output_doc.add_paragraph()
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.line_spacing = 1
+    paragraph.alignment = 0
+    run = paragraph.add_run()
+    # Use a hair smaller than the page width to avoid Word adding an unwanted spillover page.
+    run.add_picture(image_stream, width=Inches(max(0.5, page_width_inches - 0.01)))
+
+
+def collect_page_text_blocks(page: fitz.Page, metadata: dict[str, Any], page_index: int) -> list[str]:
+    if page_has_selectable_text(page):
+        metadata["text_pages"].append(page_index)
+        return extract_page_blocks(page)
+    metadata["ocr_pages"].append(page_index)
+    blocks, ocr_error = ocr_page_blocks(page)
+    if ocr_error:
+        metadata["ocr_failed_pages"].append(page_index)
+    return blocks
 
 
 def pdf_to_docx_bytes(data: bytes) -> tuple[bytes, dict[str, Any]]:
     document = fitz.open(stream=data, filetype="pdf")
-    metadata = {"text_pages": [], "ocr_pages": [], "ocr_failed_pages": [], "image_fallback_pages": [], "page_count": 0}
+    metadata = {
+        "text_pages": [],
+        "ocr_pages": [],
+        "ocr_failed_pages": [],
+        "image_fallback_pages": [],
+        "page_count": 0,
+        "layout_mode": "exact_visual",
+    }
     try:
         output_doc = Document()
-        output_doc.add_heading("Converted from PDF", level=1)
+        if document.page_count:
+            first_page = document[0]
+            first_rect = first_page.rect
+            section = output_doc.sections[0]
+            section.page_width = Inches(first_rect.width / 72)
+            section.page_height = Inches(first_rect.height / 72)
+            section.top_margin = Inches(0)
+            section.bottom_margin = Inches(0)
+            section.left_margin = Inches(0)
+            section.right_margin = Inches(0)
+            section.header_distance = Inches(0)
+            section.footer_distance = Inches(0)
+        styles = output_doc.styles
+        normal = styles["Normal"]
+        normal.font.name = "Arial"
+        normal.font.size = Pt(1)
+        normal.paragraph_format.space_before = Pt(0)
+        normal.paragraph_format.space_after = Pt(0)
+        normal.paragraph_format.line_spacing = 1
         metadata["page_count"] = document.page_count
         for page_index, page in enumerate(document, start=1):
             if page_index > 1:
                 output_doc.add_page_break()
-            output_doc.add_heading(f"Page {page_index}", level=2)
-            if page_has_selectable_text(page):
-                metadata["text_pages"].append(page_index)
-                add_blocks_to_docx(output_doc, extract_page_blocks(page), "PDF text extraction")
-                continue
-            metadata["ocr_pages"].append(page_index)
-            blocks, ocr_error = ocr_page_blocks(page)
-            if ocr_error:
-                metadata["ocr_failed_pages"].append(page_index)
+            page_width_inches = page.rect.width / 72
+            blocks = collect_page_text_blocks(page, metadata, page_index)
             if not blocks:
                 metadata["image_fallback_pages"].append(page_index)
-                add_page_image_to_docx(output_doc, page)
-                continue
-            add_blocks_to_docx(output_doc, blocks, "OCR")
+            add_exact_page_image(output_doc, page, page_width_inches)
+            add_hidden_text_layer(output_doc, blocks)
     finally:
         document.close()
     output = io.BytesIO()
@@ -552,7 +598,8 @@ async def pdf_to_word(file: UploadFile = File(...)):
         "X-PDFSNITCH-OCR-Pages": ",".join(map(str, metadata["ocr_pages"])),
         "X-PDFSNITCH-OCR-Failed-Pages": ",".join(map(str, metadata["ocr_failed_pages"])),
         "X-PDFSNITCH-Image-Fallback-Pages": ",".join(map(str, metadata["image_fallback_pages"])),
-        "Access-Control-Expose-Headers": "Content-Disposition, X-PDFSNITCH-Text-Pages, X-PDFSNITCH-OCR-Pages, X-PDFSNITCH-OCR-Failed-Pages, X-PDFSNITCH-Image-Fallback-Pages",
+        "X-PDFSNITCH-Layout-Mode": str(metadata.get("layout_mode", "exact_visual")),
+        "Access-Control-Expose-Headers": "Content-Disposition, X-PDFSNITCH-Text-Pages, X-PDFSNITCH-OCR-Pages, X-PDFSNITCH-OCR-Failed-Pages, X-PDFSNITCH-Image-Fallback-Pages, X-PDFSNITCH-Layout-Mode",
     }
     return attachment(
         converted,
