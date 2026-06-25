@@ -6,12 +6,14 @@ import io
 import logging
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import uuid
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import fitz
 from docx import Document
@@ -43,7 +45,14 @@ origins = [item.strip() for item in os.getenv(
     "PDFSNITCH_FRONTEND_ORIGINS",
     "http://127.0.0.1:4173,http://localhost:4173,http://127.0.0.1:5173,http://localhost:5173",
 ).split(",") if item.strip()]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST", "DELETE"], allow_headers=["*"])
+origin_regex = os.getenv("PDFSNITCH_FRONTEND_ORIGIN_REGEX", r"https://.*\.vercel\.app").strip() or None
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_origin_regex=origin_regex,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware("http")
@@ -233,15 +242,108 @@ def extract_page_blocks(page: fitz.Page, textpage=None) -> list[str]:
     return content
 
 
+def tesseract_status() -> dict[str, Any]:
+    command = os.getenv("TESSERACT_CMD", "tesseract").strip() or "tesseract"
+    binary = shutil.which(command)
+    status: dict[str, Any] = {
+        "available": False,
+        "binary": binary or "",
+        "version": "",
+        "languages": [],
+        "required_language": os.getenv("PDFSNITCH_OCR_LANG", "eng").strip() or "eng",
+        "tessdata_prefix": os.getenv("TESSDATA_PREFIX", ""),
+        "error": "",
+    }
+    if not binary:
+        status["error"] = f"Tesseract command not found: {command}"
+        return status
+    try:
+        version = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10)
+        status["version"] = (version.stdout or version.stderr).splitlines()[0].strip()
+    except Exception as exc:
+        status["error"] = f"Cannot run Tesseract: {exc}"
+        return status
+    try:
+        languages = subprocess.run([binary, "--list-langs"], capture_output=True, text=True, timeout=10)
+        listed = [
+            line.strip()
+            for line in (languages.stdout or "").splitlines()
+            if line.strip() and not line.lower().startswith("list of")
+        ]
+        status["languages"] = listed
+        required = status["required_language"]
+        required_parts = [part for part in re.split(r"[+,\s]+", required) if part]
+        status["available"] = all(part in listed for part in required_parts) if listed else True
+        if not status["available"]:
+            status["error"] = f"Required OCR language is missing: {required}"
+    except Exception as exc:
+        status["available"] = True
+        status["error"] = f"Tesseract is installed, but languages could not be listed: {exc}"
+    return status
+
+
+def tesseract_ocr_page_blocks(page: fitz.Page, language: str, dpi: int) -> tuple[list[str], str | None]:
+    command = os.getenv("TESSERACT_CMD", "tesseract").strip() or "tesseract"
+    binary = shutil.which(command)
+    if not binary:
+        return [], f"Tesseract command not found: {command}"
+
+    timeout = int(os.getenv("PDFSNITCH_OCR_TIMEOUT", "60"))
+    page_dpi = max(100, min(dpi, 300))
+    with tempfile.TemporaryDirectory(prefix="ocr-page-", dir=TEMP_ROOT) as directory:
+        image_path = Path(directory) / f"page-{page.number + 1}.png"
+        try:
+            pixmap = page.get_pixmap(dpi=page_dpi, alpha=False, colorspace=fitz.csRGB)
+            pixmap.save(image_path)
+        except Exception as exc:
+            return [], f"Could not render page for OCR: {exc}"
+
+        command_args = [
+            binary,
+            str(image_path),
+            "stdout",
+            "-l",
+            language,
+            "--psm",
+            os.getenv("PDFSNITCH_OCR_PSM", "6").strip() or "6",
+        ]
+        try:
+            completed = subprocess.run(command_args, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return [], f"Tesseract OCR timed out after {timeout} seconds"
+        except Exception as exc:
+            return [], f"Tesseract OCR failed to start: {exc}"
+
+        if completed.returncode != 0:
+            return [], (completed.stderr or completed.stdout or "Tesseract OCR failed.").strip()
+
+        text = completed.stdout.strip()
+        if not text:
+            return [], "Tesseract OCR did not detect text on this page."
+        blocks = [block.strip() for block in re.split(r"\n\s*\n+", text) if block.strip()]
+        return blocks or [text], None
+
+
 def ocr_page_blocks(page: fitz.Page) -> tuple[list[str], str | None]:
     language = os.getenv("PDFSNITCH_OCR_LANG", "eng").strip() or "eng"
     dpi = int(os.getenv("PDFSNITCH_OCR_DPI", "200"))
+    pymupdf_error: str | None = None
     try:
         textpage = page.get_textpage_ocr(language=language, dpi=max(100, min(dpi, 300)), full=True)
-        return extract_page_blocks(page, textpage=textpage), None
+        blocks = extract_page_blocks(page, textpage=textpage)
+        if blocks:
+            return blocks, None
+        pymupdf_error = "PyMuPDF OCR did not detect text on this page."
     except Exception as exc:
-        logger.warning("OCR failed on page %s: %s", page.number + 1, exc)
-        return [], str(exc)
+        pymupdf_error = str(exc)
+        logger.warning("PyMuPDF OCR failed on page %s: %s", page.number + 1, exc)
+
+    fallback_blocks, fallback_error = tesseract_ocr_page_blocks(page, language, dpi)
+    if fallback_blocks:
+        return fallback_blocks, None
+    combined_error = fallback_error or pymupdf_error or "OCR could not detect text."
+    logger.warning("Tesseract OCR failed on page %s: %s", page.number + 1, combined_error)
+    return [], combined_error
 
 
 def add_blocks_to_docx(output_doc: Document, blocks: list[str], source: str) -> None:
@@ -288,7 +390,7 @@ def pdf_to_docx_bytes(data: bytes) -> tuple[bytes, dict[str, Any]]:
     if metadata["ocr_pages"] and len(metadata["ocr_failed_pages"]) == len(metadata["ocr_pages"]):
         raise HTTPException(
             503,
-            "OCR is not available on the backend server. Deploy the backend with Tesseract OCR enabled, then try this scanned PDF again.",
+            "OCR is not available or failed on the backend server. Open /api/ocr-status to verify Tesseract, then redeploy the Docker backend.",
         )
     output = io.BytesIO()
     output_doc.save(output)
@@ -298,6 +400,11 @@ def pdf_to_docx_bytes(data: bytes) -> tuple[bytes, dict[str, Any]]:
 @app.get("/api/health")
 def health():
     return {"status": "ok", "max_upload_mb": MAX_UPLOAD_BYTES // 1024 // 1024}
+
+
+@app.get("/api/ocr-status")
+def ocr_status():
+    return tesseract_status()
 
 
 @app.post("/api/preview")

@@ -4,6 +4,9 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PDFSNITCH_OCR_LANG=eng
 ENV PDFSNITCH_OCR_DPI=200
+ENV PDFSNITCH_OCR_PSM=6
+ENV PDFSNITCH_OCR_TIMEOUT=60
+ENV TESSERACT_CMD=tesseract
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
 WORKDIR /app
@@ -12,6 +15,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
+    tesseract-ocr-osd \
     libgomp1 \
   && rm -rf /var/lib/apt/lists/*
 
