@@ -17,6 +17,8 @@ from typing import Any, Iterable
 
 import fitz
 from docx import Document
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls
 from docx.shared import Inches, Pt
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -406,19 +408,214 @@ def add_hidden_text_layer(output_doc: Document, blocks: list[str]) -> None:
     run.font.size = Pt(1)
 
 
-def add_exact_page_image(output_doc: Document, page: fitz.Page, page_width_inches: float) -> None:
-    render_dpi = int(os.getenv("PDFSNITCH_WORD_IMAGE_DPI", "180"))
-    render_dpi = max(120, min(render_dpi, 260))
-    pixmap = page.get_pixmap(dpi=render_dpi, alpha=False, colorspace=fitz.csRGB)
-    image_stream = io.BytesIO(pixmap.tobytes("png"))
+def span_color_hex(value: int | None) -> str:
+    if value is None:
+        return "000000"
+    return f"{int(value) & 0xFFFFFF:06X}"
+
+
+def is_bold_span(span: dict[str, Any]) -> bool:
+    font = str(span.get("font", "")).lower()
+    return "bold" in font or "black" in font or bool(int(span.get("flags", 0)) & 16)
+
+
+def is_italic_span(span: dict[str, Any]) -> bool:
+    font = str(span.get("font", "")).lower()
+    return "italic" in font or "oblique" in font or bool(int(span.get("flags", 0)) & 2)
+
+
+def xml_text(value: str) -> str:
+    return html.escape(value or "", quote=True)
+
+
+def editable_pdf_lines(page: fitz.Page) -> list[dict[str, Any]]:
+    lines: list[dict[str, Any]] = []
+    page_dict = page.get_text("dict", sort=True)
+    for block in page_dict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            spans = []
+            text_parts = []
+            for span in line.get("spans", []):
+                text = str(span.get("text", "")).replace("\x00", "").strip()
+                if not text:
+                    continue
+                text_parts.append(text)
+                spans.append({
+                    "text": text,
+                    "size": max(5.0, min(float(span.get("size", 10)), 72.0)),
+                    "font": str(span.get("font", "Arial"))[:64] or "Arial",
+                    "bold": is_bold_span(span),
+                    "italic": is_italic_span(span),
+                    "color": span_color_hex(span.get("color")),
+                })
+            if not spans:
+                continue
+            bbox = fitz.Rect(line.get("bbox", block.get("bbox", (0, 0, 100, 14))))
+            lines.append({
+                "x": max(0.0, bbox.x0),
+                "y": max(0.0, bbox.y0),
+                "w": max(8.0, bbox.width + 4),
+                "h": max(8.0, bbox.height + 3),
+                "text": " ".join(text_parts),
+                "spans": spans,
+            })
+    return lines
+
+
+def tesseract_ocr_page_lines(page: fitz.Page) -> tuple[list[dict[str, Any]], str | None]:
+    command = os.getenv("TESSERACT_CMD", "tesseract").strip() or "tesseract"
+    binary = shutil.which(command)
+    if not binary:
+        return [], f"Tesseract command not found: {command}"
+
+    language = os.getenv("PDFSNITCH_OCR_LANG", "eng").strip() or "eng"
+    timeout = int(os.getenv("PDFSNITCH_OCR_TIMEOUT", "90"))
+    dpi = max(150, min(int(os.getenv("PDFSNITCH_OCR_DPI", "300")), 400))
+    with tempfile.TemporaryDirectory(prefix="ocr-layout-", dir=TEMP_ROOT) as directory:
+        image_path = Path(directory) / f"page-{page.number + 1}.png"
+        clean_image_path = Path(directory) / f"page-{page.number + 1}-clean.png"
+        try:
+            pixmap = page.get_pixmap(dpi=dpi, alpha=False, colorspace=fitz.csRGB)
+            pixmap.save(image_path)
+            with Image.open(image_path) as image:
+                cleaned = ImageOps.grayscale(image)
+                cleaned = ImageOps.autocontrast(cleaned)
+                cleaned = ImageEnhance.Sharpness(cleaned).enhance(1.8)
+                cleaned = ImageEnhance.Contrast(cleaned).enhance(1.4)
+                cleaned.save(clean_image_path)
+        except Exception as exc:
+            return [], f"Could not render page for OCR: {exc}"
+
+        psm_values = [
+            item.strip()
+            for item in os.getenv("PDFSNITCH_OCR_PSM", "6,3,11").split(",")
+            if item.strip()
+        ]
+        best_rows: list[dict[str, str]] = []
+        errors: list[str] = []
+        for psm in dict.fromkeys(psm_values):
+            args = [binary, str(clean_image_path), "stdout", "-l", language, "--psm", psm, "tsv"]
+            try:
+                completed = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                errors.append(f"Tesseract layout OCR timed out after {timeout} seconds")
+                continue
+            except Exception as exc:
+                errors.append(f"Tesseract layout OCR failed to start: {exc}")
+                continue
+            if completed.returncode != 0:
+                errors.append((completed.stderr or completed.stdout or "Tesseract OCR failed.").strip())
+                continue
+            rows = []
+            lines = completed.stdout.splitlines()
+            if not lines:
+                continue
+            headers = lines[0].split("\t")
+            for raw in lines[1:]:
+                cells = raw.split("\t")
+                if len(cells) < len(headers):
+                    continue
+                row = dict(zip(headers, cells))
+                text = row.get("text", "").strip()
+                if not text:
+                    continue
+                try:
+                    confidence = float(row.get("conf", "-1"))
+                except ValueError:
+                    confidence = -1
+                if confidence < 0:
+                    continue
+                rows.append(row)
+            if len(rows) > len(best_rows):
+                best_rows = rows
+            if rows:
+                break
+
+    if not best_rows:
+        return [], errors[-1] if errors else "Tesseract OCR did not detect positioned text."
+
+    grouped: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+    for row in best_rows:
+        key = (row.get("block_num", "0"), row.get("par_num", "0"), row.get("line_num", "0"))
+        grouped.setdefault(key, []).append(row)
+
+    scale = 72 / dpi
+    lines_out: list[dict[str, Any]] = []
+    for rows in grouped.values():
+        words = [row.get("text", "").strip() for row in rows if row.get("text", "").strip()]
+        if not words:
+            continue
+        lefts = [int(float(row.get("left", "0"))) for row in rows]
+        tops = [int(float(row.get("top", "0"))) for row in rows]
+        rights = [int(float(row.get("left", "0"))) + int(float(row.get("width", "0"))) for row in rows]
+        bottoms = [int(float(row.get("top", "0"))) + int(float(row.get("height", "0"))) for row in rows]
+        x0, y0, x1, y1 = min(lefts) * scale, min(tops) * scale, max(rights) * scale, max(bottoms) * scale
+        height = max(8.0, y1 - y0 + 3)
+        text = " ".join(words)
+        lines_out.append({
+            "x": max(0.0, x0),
+            "y": max(0.0, y0),
+            "w": max(8.0, x1 - x0 + 4),
+            "h": height,
+            "text": text,
+            "spans": [{
+                "text": text,
+                "size": max(6.0, min(height * 0.72, 18.0)),
+                "font": "Arial",
+                "bold": False,
+                "italic": False,
+                "color": "000000",
+            }],
+        })
+    return sorted(lines_out, key=lambda item: (item["y"], item["x"])), None
+
+
+def textbox_run_xml(span: dict[str, Any]) -> str:
+    bold = "<w:b/>" if span.get("bold") else ""
+    italic = "<w:i/>" if span.get("italic") else ""
+    size_half_points = int(round(float(span.get("size", 10)) * 2))
+    font_name = xml_text(str(span.get("font", "Arial")) or "Arial")
+    text = xml_text(str(span.get("text", "")))
+    return (
+        f"<w:r><w:rPr><w:rFonts w:ascii=\"{font_name}\" w:hAnsi=\"{font_name}\"/>"
+        f"<w:sz w:val=\"{size_half_points}\"/><w:color w:val=\"{span.get('color', '000000')}\"/>"
+        f"{bold}{italic}</w:rPr><w:t xml:space=\"preserve\">{text}</w:t></w:r>"
+    )
+
+
+def add_editable_textbox(paragraph, shape_id: int, line: dict[str, Any]) -> None:
+    x = float(line.get("x", 0))
+    y = float(line.get("y", 0))
+    width = max(8.0, float(line.get("w", 120)))
+    height = max(8.0, float(line.get("h", 14)))
+    runs = "".join(textbox_run_xml(span) for span in line.get("spans", []))
+    if not runs:
+        return
+    xml = (
+        f"<w:r {nsdecls('w')} xmlns:v=\"urn:schemas-microsoft-com:vml\"><w:pict>"
+        f"<v:shape id=\"pdfsnitch_text_{shape_id}\" type=\"#_x0000_t202\" "
+        f"style=\"position:absolute;margin-left:{x:.2f}pt;margin-top:{y:.2f}pt;"
+        f"width:{width:.2f}pt;height:{height:.2f}pt;z-index:{shape_id};"
+        f"mso-position-horizontal:absolute;mso-position-horizontal-relative:page;"
+        f"mso-position-vertical:absolute;mso-position-vertical-relative:page\" "
+        f"filled=\"f\" stroked=\"f\">"
+        f"<v:textbox inset=\"0,0,0,0\"><w:txbxContent>"
+        f"<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr>{runs}</w:p>"
+        f"</w:txbxContent></v:textbox></v:shape></w:pict></w:r>"
+    )
+    paragraph._p.append(parse_xml(xml))
+
+
+def add_editable_page(output_doc: Document, page: fitz.Page, lines: list[dict[str, Any]], shape_start: int) -> int:
     paragraph = output_doc.add_paragraph()
     paragraph.paragraph_format.space_before = Pt(0)
     paragraph.paragraph_format.space_after = Pt(0)
     paragraph.paragraph_format.line_spacing = 1
-    paragraph.alignment = 0
-    run = paragraph.add_run()
-    # Use a hair smaller than the page width to avoid Word adding an unwanted spillover page.
-    run.add_picture(image_stream, width=Inches(max(0.5, page_width_inches - 0.01)))
+    for offset, line in enumerate(lines):
+        add_editable_textbox(paragraph, shape_start + offset, line)
+    return shape_start + len(lines)
 
 
 def collect_page_text_blocks(page: fitz.Page, metadata: dict[str, Any], page_index: int) -> list[str]:
@@ -440,7 +637,7 @@ def pdf_to_docx_bytes(data: bytes) -> tuple[bytes, dict[str, Any]]:
         "ocr_failed_pages": [],
         "image_fallback_pages": [],
         "page_count": 0,
-        "layout_mode": "exact_visual",
+        "layout_mode": "editable_positioned_text",
     }
     try:
         output_doc = Document()
@@ -464,15 +661,24 @@ def pdf_to_docx_bytes(data: bytes) -> tuple[bytes, dict[str, Any]]:
         normal.paragraph_format.space_after = Pt(0)
         normal.paragraph_format.line_spacing = 1
         metadata["page_count"] = document.page_count
+        shape_id = 1
         for page_index, page in enumerate(document, start=1):
             if page_index > 1:
                 output_doc.add_page_break()
-            page_width_inches = page.rect.width / 72
-            blocks = collect_page_text_blocks(page, metadata, page_index)
-            if not blocks:
+            if page_has_selectable_text(page):
+                metadata["text_pages"].append(page_index)
+                lines = editable_pdf_lines(page)
+            else:
+                metadata["ocr_pages"].append(page_index)
+                lines, ocr_error = tesseract_ocr_page_lines(page)
+                if ocr_error:
+                    metadata["ocr_failed_pages"].append(page_index)
+            if not lines:
                 metadata["image_fallback_pages"].append(page_index)
-            add_exact_page_image(output_doc, page, page_width_inches)
-            add_hidden_text_layer(output_doc, blocks)
+                note = output_doc.add_paragraph("[PDFSnitch could not detect editable text on this page.]")
+                note.runs[0].font.size = Pt(10)
+                continue
+            shape_id = add_editable_page(output_doc, page, lines, shape_id)
     finally:
         document.close()
     output = io.BytesIO()
