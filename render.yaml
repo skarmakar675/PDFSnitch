@@ -33,8 +33,12 @@ services:
         value: /tmp/pdfsnitch
       - key: PDFSNITCH_OCR_DPI
         value: 200
+      - key: PDFSNITCH_OCR_PSM
+        value: 6
+      - key: PDFSNITCH_OCR_TIMEOUT
+        value: 20
       - key: PDFSNITCH_PADDLEOCR_ENABLED
-        value: 1
+        value: 0
       - key: PDFSNITCH_PADDLEOCR_LIMIT
         value: 960
       - key: PADDLEOCR_HOME
