@@ -17,10 +17,11 @@ from typing import Any, Iterable
 
 import fitz
 from docx import Document
+from docx.shared import Inches
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageEnhance, ImageOps, UnidentifiedImageError
 from pypdf import PdfReader, PdfWriter
 from reportlab.lib import colors
 from reportlab.lib.colors import Color
@@ -288,38 +289,66 @@ def tesseract_ocr_page_blocks(page: fitz.Page, language: str, dpi: int) -> tuple
     if not binary:
         return [], f"Tesseract command not found: {command}"
 
-    timeout = int(os.getenv("PDFSNITCH_OCR_TIMEOUT", "60"))
-    page_dpi = max(100, min(dpi, 300))
+    timeout = int(os.getenv("PDFSNITCH_OCR_TIMEOUT", "90"))
+    page_dpi = max(150, min(dpi, 400))
     with tempfile.TemporaryDirectory(prefix="ocr-page-", dir=TEMP_ROOT) as directory:
         image_path = Path(directory) / f"page-{page.number + 1}.png"
+        clean_image_path = Path(directory) / f"page-{page.number + 1}-clean.png"
         try:
             pixmap = page.get_pixmap(dpi=page_dpi, alpha=False, colorspace=fitz.csRGB)
             pixmap.save(image_path)
+            with Image.open(image_path) as image:
+                cleaned = ImageOps.grayscale(image)
+                cleaned = ImageOps.autocontrast(cleaned)
+                cleaned = ImageEnhance.Sharpness(cleaned).enhance(1.8)
+                cleaned = ImageEnhance.Contrast(cleaned).enhance(1.4)
+                cleaned.save(clean_image_path)
         except Exception as exc:
             return [], f"Could not render page for OCR: {exc}"
 
-        command_args = [
-            binary,
-            str(image_path),
-            "stdout",
-            "-l",
-            language,
-            "--psm",
-            os.getenv("PDFSNITCH_OCR_PSM", "6").strip() or "6",
+        psm_values = [
+            item.strip()
+            for item in os.getenv("PDFSNITCH_OCR_PSM", "6,3,11").split(",")
+            if item.strip()
         ]
-        try:
-            completed = subprocess.run(command_args, capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            return [], f"Tesseract OCR timed out after {timeout} seconds"
-        except Exception as exc:
-            return [], f"Tesseract OCR failed to start: {exc}"
+        languages = [language]
+        if language != "eng":
+            languages.append("eng")
+        image_candidates = [clean_image_path, image_path]
+        best_text = ""
+        errors: list[str] = []
+        for candidate_language in dict.fromkeys(languages):
+            for psm in dict.fromkeys(psm_values):
+                for candidate_image in image_candidates:
+                    command_args = [
+                        binary,
+                        str(candidate_image),
+                        "stdout",
+                        "-l",
+                        candidate_language,
+                        "--psm",
+                        psm,
+                    ]
+                    try:
+                        completed = subprocess.run(command_args, capture_output=True, text=True, timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        errors.append(f"Tesseract timed out after {timeout} seconds")
+                        continue
+                    except Exception as exc:
+                        errors.append(f"Tesseract failed to start: {exc}")
+                        continue
+                    text = completed.stdout.strip()
+                    if text and len(text) > len(best_text):
+                        best_text = text
+                    if completed.returncode == 0 and len(normalized_text(text)) >= 8:
+                        blocks = [block.strip() for block in re.split(r"\n\s*\n+", text) if block.strip()]
+                        return blocks or [text], None
+                    if completed.returncode != 0:
+                        errors.append((completed.stderr or completed.stdout or "Tesseract OCR failed.").strip())
 
-        if completed.returncode != 0:
-            return [], (completed.stderr or completed.stdout or "Tesseract OCR failed.").strip()
-
-        text = completed.stdout.strip()
+        text = best_text.strip()
         if not text:
-            return [], "Tesseract OCR did not detect text on this page."
+            return [], errors[-1] if errors else "Tesseract OCR did not detect text on this page."
         blocks = [block.strip() for block in re.split(r"\n\s*\n+", text) if block.strip()]
         return blocks or [text], None
 
@@ -365,9 +394,18 @@ def add_blocks_to_docx(output_doc: Document, blocks: list[str], source: str) -> 
             paragraph.add_run(line)
 
 
+def add_page_image_to_docx(output_doc: Document, page: fitz.Page) -> None:
+    with tempfile.TemporaryDirectory(prefix="docx-page-image-", dir=TEMP_ROOT) as directory:
+        image_path = Path(directory) / f"page-{page.number + 1}.png"
+        pixmap = page.get_pixmap(dpi=140, alpha=False, colorspace=fitz.csRGB)
+        pixmap.save(image_path)
+        output_doc.add_paragraph("OCR could not detect clear editable text on this page. The page image is included below so no page is skipped.")
+        output_doc.add_picture(str(image_path), width=Inches(6.2))
+
+
 def pdf_to_docx_bytes(data: bytes) -> tuple[bytes, dict[str, Any]]:
     document = fitz.open(stream=data, filetype="pdf")
-    metadata = {"text_pages": [], "ocr_pages": [], "ocr_failed_pages": [], "page_count": 0}
+    metadata = {"text_pages": [], "ocr_pages": [], "ocr_failed_pages": [], "image_fallback_pages": [], "page_count": 0}
     try:
         output_doc = Document()
         output_doc.add_heading("Converted from PDF", level=1)
@@ -384,14 +422,13 @@ def pdf_to_docx_bytes(data: bytes) -> tuple[bytes, dict[str, Any]]:
             blocks, ocr_error = ocr_page_blocks(page)
             if ocr_error:
                 metadata["ocr_failed_pages"].append(page_index)
+            if not blocks:
+                metadata["image_fallback_pages"].append(page_index)
+                add_page_image_to_docx(output_doc, page)
+                continue
             add_blocks_to_docx(output_doc, blocks, "OCR")
     finally:
         document.close()
-    if metadata["ocr_pages"] and len(metadata["ocr_failed_pages"]) == len(metadata["ocr_pages"]):
-        raise HTTPException(
-            503,
-            "OCR is not available or failed on the backend server. Open /api/ocr-status to verify Tesseract, then redeploy the Docker backend.",
-        )
     output = io.BytesIO()
     output_doc.save(output)
     return output.getvalue(), metadata
@@ -514,7 +551,8 @@ async def pdf_to_word(file: UploadFile = File(...)):
         "X-PDFSNITCH-Text-Pages": ",".join(map(str, metadata["text_pages"])),
         "X-PDFSNITCH-OCR-Pages": ",".join(map(str, metadata["ocr_pages"])),
         "X-PDFSNITCH-OCR-Failed-Pages": ",".join(map(str, metadata["ocr_failed_pages"])),
-        "Access-Control-Expose-Headers": "Content-Disposition, X-PDFSNITCH-Text-Pages, X-PDFSNITCH-OCR-Pages, X-PDFSNITCH-OCR-Failed-Pages",
+        "X-PDFSNITCH-Image-Fallback-Pages": ",".join(map(str, metadata["image_fallback_pages"])),
+        "Access-Control-Expose-Headers": "Content-Disposition, X-PDFSNITCH-Text-Pages, X-PDFSNITCH-OCR-Pages, X-PDFSNITCH-OCR-Failed-Pages, X-PDFSNITCH-Image-Fallback-Pages",
     }
     return attachment(
         converted,

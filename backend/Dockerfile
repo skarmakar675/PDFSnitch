@@ -2,10 +2,10 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PDFSNITCH_OCR_LANG=eng
-ENV PDFSNITCH_OCR_DPI=200
-ENV PDFSNITCH_OCR_PSM=6
-ENV PDFSNITCH_OCR_TIMEOUT=60
+ENV PDFSNITCH_OCR_LANG=eng+hin
+ENV PDFSNITCH_OCR_DPI=300
+ENV PDFSNITCH_OCR_PSM=6,3,11
+ENV PDFSNITCH_OCR_TIMEOUT=90
 ENV TESSERACT_CMD=tesseract
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
@@ -15,6 +15,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
+    tesseract-ocr-hin \
     tesseract-ocr-osd \
     libgomp1 \
   && rm -rf /var/lib/apt/lists/*
