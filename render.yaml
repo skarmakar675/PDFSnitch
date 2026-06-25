@@ -31,8 +31,12 @@ services:
         value: /var/data/exports
       - key: PDFSNITCH_TEMP_DIR
         value: /tmp/pdfsnitch
+      - key: PDFSNITCH_OCR_DPI
+        value: 200
       - key: PDFSNITCH_PADDLEOCR_ENABLED
         value: 1
+      - key: PDFSNITCH_PADDLEOCR_LIMIT
+        value: 960
       - key: PADDLEOCR_HOME
         value: /tmp/paddleocr
       - key: ADMIN_USERNAME

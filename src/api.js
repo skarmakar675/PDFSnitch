@@ -14,10 +14,12 @@ const filenameFromHeaders = (headers, fallback) => {
 
 const request = async (path, formData, responseType = 'blob') => {
   let response
+  const url = `${getApiBase()}${path}`
   try {
-    response = await fetch(`${getApiBase()}${path}`, { method: 'POST', body: formData })
+    response = await fetch(url, { method: 'POST', body: formData })
   } catch {
-    throw new Error(window.PDFC_SETTINGS?.errorMessage || 'Cannot reach the PDF processing service. try again Sometime.')
+    const baseMessage = window.PDFC_SETTINGS?.errorMessage || 'Cannot reach the PDF processing service. try again Sometime.'
+    throw new Error(`${baseMessage} Backend URL: ${getApiBase()}`)
   }
   if (!response.ok) {
     let message = 'Processing failed. Check the file and try again.'

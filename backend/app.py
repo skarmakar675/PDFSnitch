@@ -12,6 +12,8 @@ import tempfile
 import uuid
 import zipfile
 from contextlib import contextmanager
+from importlib import metadata as importlib_metadata
+from importlib import util as importlib_util
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -579,17 +581,40 @@ def tesseract_ocr_page_lines(page: fitz.Page) -> tuple[list[dict[str, Any]], str
 def paddle_ocr_status() -> dict[str, Any]:
     if os.getenv("PDFSNITCH_PADDLEOCR_ENABLED", "1").lower() in {"0", "false", "no"}:
         return {"available": False, "error": "PaddleOCR disabled by PDFSNITCH_PADDLEOCR_ENABLED"}
-    try:
-        import paddle  # type: ignore
-        import paddleocr  # type: ignore
+    if _PADDLE_OCR_ENGINE is not None:
         return {
             "available": True,
-            "paddle_version": getattr(paddle, "__version__", ""),
-            "paddleocr_version": getattr(paddleocr, "__version__", ""),
+            "loaded": True,
+            "paddle_version": safe_package_version("paddlepaddle"),
+            "paddleocr_version": safe_package_version("paddleocr"),
             "lang": os.getenv("PDFSNITCH_PADDLEOCR_LANG", "en"),
         }
-    except Exception as exc:
-        return {"available": False, "error": str(exc)}
+    if importlib_util.find_spec("paddleocr") is None:
+        return {"available": False, "error": "paddleocr package is not installed"}
+    if importlib_util.find_spec("paddle") is None:
+        return {"available": False, "error": "paddlepaddle package is not installed"}
+    if _PADDLE_OCR_ERROR:
+        return {
+            "available": False,
+            "error": _PADDLE_OCR_ERROR,
+            "paddle_version": safe_package_version("paddlepaddle"),
+            "paddleocr_version": safe_package_version("paddleocr"),
+            "lang": os.getenv("PDFSNITCH_PADDLEOCR_LANG", "en"),
+        }
+    return {
+        "available": True,
+        "loaded": False,
+        "paddle_version": safe_package_version("paddlepaddle"),
+        "paddleocr_version": safe_package_version("paddleocr"),
+        "lang": os.getenv("PDFSNITCH_PADDLEOCR_LANG", "en"),
+    }
+
+
+def safe_package_version(package_name: str) -> str:
+    try:
+        return importlib_metadata.version(package_name)
+    except Exception:
+        return ""
 
 
 def get_paddle_ocr_engine():
