@@ -17,9 +17,10 @@ from typing import Any, Iterable
 
 import fitz
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
-from docx.shared import Inches, Pt
+from docx.shared import Inches, Pt, RGBColor
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -31,8 +32,11 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.pdfgen import canvas
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger("pdfsnitch")
+_PADDLE_OCR_ENGINE: Any | None = None
+_PADDLE_OCR_ERROR: str | None = None
 
 MAX_UPLOAD_BYTES = int(os.getenv("PDFSNITCH_MAX_UPLOAD_MB", "50")) * 1024 * 1024
 MAX_REQUEST_BYTES = MAX_UPLOAD_BYTES * 10
@@ -572,6 +576,187 @@ def tesseract_ocr_page_lines(page: fitz.Page) -> tuple[list[dict[str, Any]], str
     return sorted(lines_out, key=lambda item: (item["y"], item["x"])), None
 
 
+def paddle_ocr_status() -> dict[str, Any]:
+    if os.getenv("PDFSNITCH_PADDLEOCR_ENABLED", "1").lower() in {"0", "false", "no"}:
+        return {"available": False, "error": "PaddleOCR disabled by PDFSNITCH_PADDLEOCR_ENABLED"}
+    try:
+        import paddle  # type: ignore
+        import paddleocr  # type: ignore
+        return {
+            "available": True,
+            "paddle_version": getattr(paddle, "__version__", ""),
+            "paddleocr_version": getattr(paddleocr, "__version__", ""),
+            "lang": os.getenv("PDFSNITCH_PADDLEOCR_LANG", "en"),
+        }
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
+
+
+def get_paddle_ocr_engine():
+    global _PADDLE_OCR_ENGINE, _PADDLE_OCR_ERROR
+    if _PADDLE_OCR_ENGINE is not None:
+        return _PADDLE_OCR_ENGINE
+    if os.getenv("PDFSNITCH_PADDLEOCR_ENABLED", "1").lower() in {"0", "false", "no"}:
+        _PADDLE_OCR_ERROR = "PaddleOCR disabled by PDFSNITCH_PADDLEOCR_ENABLED"
+        return None
+    try:
+        from paddleocr import PaddleOCR  # type: ignore
+        lang = os.getenv("PDFSNITCH_PADDLEOCR_LANG", "en").strip() or "en"
+        try:
+            _PADDLE_OCR_ENGINE = PaddleOCR(
+                lang=lang,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=True,
+                text_det_limit_side_len=int(os.getenv("PDFSNITCH_PADDLEOCR_LIMIT", "1280")),
+            )
+        except TypeError:
+            _PADDLE_OCR_ENGINE = PaddleOCR(lang=lang, use_angle_cls=True, show_log=False)
+        _PADDLE_OCR_ERROR = None
+        return _PADDLE_OCR_ENGINE
+    except Exception as exc:
+        _PADDLE_OCR_ERROR = str(exc)
+        logger.warning("PaddleOCR unavailable: %s", exc)
+        return None
+
+
+def polygon_bounds(points: Any) -> tuple[float, float, float, float] | None:
+    try:
+        coords = []
+        for point in points:
+            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                coords.append((float(point[0]), float(point[1])))
+        if not coords:
+            return None
+        xs = [item[0] for item in coords]
+        ys = [item[1] for item in coords]
+        return min(xs), min(ys), max(xs), max(ys)
+    except Exception:
+        return None
+
+
+def normalize_paddle_items(raw_result: Any) -> list[tuple[Any, str, float]]:
+    items: list[tuple[Any, str, float]] = []
+
+    def consume_dict(data: dict[str, Any]) -> None:
+        texts = data.get("rec_texts") or data.get("texts") or data.get("text") or []
+        scores = data.get("rec_scores") or data.get("scores") or []
+        boxes = data.get("rec_polys") or data.get("rec_boxes") or data.get("dt_polys") or data.get("boxes") or []
+        if isinstance(texts, str):
+            texts = [texts]
+        for index, text in enumerate(texts):
+            if not str(text).strip():
+                continue
+            box = boxes[index] if index < len(boxes) else None
+            score = float(scores[index]) if index < len(scores) else 0.85
+            items.append((box, str(text), score))
+
+    def walk(value: Any) -> None:
+        if value is None:
+            return
+        if hasattr(value, "res") and isinstance(value.res, dict):
+            consume_dict(value.res)
+            return
+        if isinstance(value, dict):
+            consume_dict(value)
+            return
+        if isinstance(value, (list, tuple)):
+            if len(value) >= 2 and isinstance(value[1], (list, tuple)) and len(value[1]) >= 2 and isinstance(value[1][0], str):
+                box, payload = value[0], value[1]
+                try:
+                    score = float(payload[1])
+                except Exception:
+                    score = 0.85
+                items.append((box, str(payload[0]), score))
+                return
+            for child in value:
+                walk(child)
+
+    walk(raw_result)
+    return items
+
+
+def lines_from_paddle_image(image_path: Path, page_width: float, page_height: float) -> tuple[list[dict[str, Any]], str | None, float]:
+    engine = get_paddle_ocr_engine()
+    if engine is None:
+        return [], _PADDLE_OCR_ERROR or "PaddleOCR unavailable", 0.0
+    try:
+        if hasattr(engine, "predict"):
+            raw = engine.predict(str(image_path))
+        else:
+            raw = engine.ocr(str(image_path), cls=True)
+    except Exception as exc:
+        return [], str(exc), 0.0
+
+    try:
+        with Image.open(image_path) as image:
+            image_width, image_height = image.size
+    except Exception:
+        image_width, image_height = 1, 1
+    scale_x = page_width / max(1, image_width)
+    scale_y = page_height / max(1, image_height)
+    lines: list[dict[str, Any]] = []
+    scores: list[float] = []
+    for box, text, score in normalize_paddle_items(raw):
+        bounds = polygon_bounds(box)
+        if bounds:
+            x0, y0, x1, y1 = bounds
+            x, y, width, height = x0 * scale_x, y0 * scale_y, max(8, (x1 - x0) * scale_x), max(8, (y1 - y0) * scale_y)
+        else:
+            x, y, width, height = 0.0, len(lines) * 14.0, page_width * 0.9, 14.0
+        font_size = max(6.0, min(height * 0.72, 22.0))
+        clean_text = normalized_text(text)
+        if not clean_text:
+            continue
+        scores.append(max(0.0, min(float(score), 1.0)))
+        lines.append({
+            "x": x,
+            "y": y,
+            "w": width + 4,
+            "h": height + 3,
+            "text": clean_text,
+            "score": score,
+            "spans": [{
+                "text": clean_text,
+                "size": font_size,
+                "font": "Arial",
+                "bold": False,
+                "italic": False,
+                "color": "000000",
+            }],
+        })
+    confidence = sum(scores) / len(scores) if scores else 0.0
+    return sorted(lines, key=lambda item: (item["y"], item["x"])), None if lines else "PaddleOCR did not detect text.", confidence
+
+
+def render_page_image(page: fitz.Page, dpi: int | None = None) -> Path:
+    target_dpi = dpi or max(150, min(int(os.getenv("PDFSNITCH_OCR_DPI", "300")), 400))
+    directory = Path(tempfile.mkdtemp(prefix="ocr-page-", dir=TEMP_ROOT))
+    image_path = directory / f"page-{page.number + 1}.png"
+    pixmap = page.get_pixmap(dpi=target_dpi, alpha=False, colorspace=fitz.csRGB)
+    pixmap.save(image_path)
+    return image_path
+
+
+def ocr_page_lines(page: fitz.Page, metadata: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None, float]:
+    image_path = render_page_image(page)
+    try:
+        paddle_lines, paddle_error, paddle_confidence = lines_from_paddle_image(image_path, page.rect.width, page.rect.height)
+        if paddle_lines:
+            metadata["ocr_engine"] = "paddleocr"
+            return paddle_lines, None, paddle_confidence
+        fallback_lines, fallback_error = tesseract_ocr_page_lines(page)
+        if fallback_lines:
+            metadata["ocr_engine"] = "tesseract"
+            return fallback_lines, None, 0.62
+        return [], paddle_error or fallback_error or "OCR did not detect text.", 0.0
+    finally:
+        try:
+            shutil.rmtree(image_path.parent, ignore_errors=True)
+        except Exception:
+            pass
+
+
 def textbox_run_xml(span: dict[str, Any]) -> str:
     bold = "<w:b/>" if span.get("bold") else ""
     italic = "<w:i/>" if span.get("italic") else ""
@@ -618,6 +803,149 @@ def add_editable_page(output_doc: Document, page: fitz.Page, lines: list[dict[st
     return shape_start + len(lines)
 
 
+def average_font_size(lines: list[dict[str, Any]]) -> float:
+    sizes = [float(span.get("size", 10)) for line in lines for span in line.get("spans", [])]
+    return sum(sizes) / len(sizes) if sizes else 10.0
+
+
+def add_line_runs(paragraph, line: dict[str, Any]) -> None:
+    for span in line.get("spans", []) or [{"text": line.get("text", ""), "size": 10, "font": "Arial"}]:
+        run = paragraph.add_run(str(span.get("text", "")))
+        run.font.name = str(span.get("font", "Arial") or "Arial")
+        run.font.size = Pt(max(6, min(float(span.get("size", 10)), 48)))
+        run.bold = bool(span.get("bold"))
+        run.italic = bool(span.get("italic"))
+        color = str(span.get("color", "000000"))
+        if re.match(r"^[0-9A-Fa-f]{6}$", color):
+            run.font.color.rgb = RGBColor.from_string(color.upper())
+
+
+def paragraph_alignment(line: dict[str, Any], page_width: float) -> Any:
+    center = float(line.get("x", 0)) + float(line.get("w", 0)) / 2
+    if abs(center - page_width / 2) < page_width * 0.08 and float(line.get("w", 0)) < page_width * 0.75:
+        return WD_ALIGN_PARAGRAPH.CENTER
+    if float(line.get("x", 0)) > page_width * 0.58:
+        return WD_ALIGN_PARAGRAPH.RIGHT
+    return WD_ALIGN_PARAGRAPH.LEFT
+
+
+def group_lines_into_blocks(lines: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    if not lines:
+        return []
+    sorted_lines = sorted(lines, key=lambda item: (float(item.get("y", 0)), float(item.get("x", 0))))
+    blocks: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    previous_bottom = None
+    previous_x = 0.0
+    for line in sorted_lines:
+        y = float(line.get("y", 0))
+        h = float(line.get("h", 12))
+        x = float(line.get("x", 0))
+        gap = 0 if previous_bottom is None else y - previous_bottom
+        new_block = previous_bottom is not None and (gap > max(10, h * 0.9) or abs(x - previous_x) > 180)
+        if new_block and current:
+            blocks.append(current)
+            current = []
+        current.append(line)
+        previous_bottom = y + h
+        previous_x = x
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def line_is_list_item(text: str) -> bool:
+    return bool(re.match(r"^\s*(?:[-•*]|\(?[0-9]{1,2}[\).]|[A-Za-z][\).])\s+", text))
+
+
+def possible_table_rows(lines: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    rows: list[list[dict[str, Any]]] = []
+    for line in sorted(lines, key=lambda item: (float(item.get("y", 0)), float(item.get("x", 0)))):
+        placed = False
+        y = float(line.get("y", 0))
+        for row in rows:
+            row_y = sum(float(item.get("y", 0)) for item in row) / len(row)
+            if abs(y - row_y) <= max(5.5, float(line.get("h", 10)) * 0.45):
+                row.append(line)
+                placed = True
+                break
+        if not placed:
+            rows.append([line])
+    rows = [sorted(row, key=lambda item: float(item.get("x", 0))) for row in rows]
+    return [row for row in rows if len(row) >= 2]
+
+
+def looks_like_table(lines: list[dict[str, Any]]) -> bool:
+    rows = possible_table_rows(lines)
+    if len(rows) < 2:
+        return False
+    multi_rows = sum(1 for row in rows if len(row) >= 2)
+    return multi_rows >= 2 and max(len(row) for row in rows) <= 8
+
+
+def add_table_from_lines(output_doc: Document, lines: list[dict[str, Any]]) -> None:
+    rows = possible_table_rows(lines)
+    columns = max(len(row) for row in rows)
+    table = output_doc.add_table(rows=len(rows), cols=columns)
+    table.style = "Table Grid"
+    for row_index, row in enumerate(rows):
+        for col_index in range(columns):
+            cell = table.cell(row_index, col_index)
+            cell.text = ""
+            if col_index >= len(row):
+                continue
+            paragraph = cell.paragraphs[0]
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(0)
+            add_line_runs(paragraph, row[col_index])
+
+
+def add_structured_page(output_doc: Document, lines: list[dict[str, Any]], page_width: float, page_height: float) -> None:
+    top_margin = page_height * 0.08
+    bottom_margin = page_height * 0.92
+    header_lines = [line for line in lines if float(line.get("y", 0)) <= top_margin]
+    footer_lines = [line for line in lines if float(line.get("y", 0)) >= bottom_margin]
+    body_lines = [line for line in lines if line not in header_lines and line not in footer_lines]
+    ordered_groups = [header_lines] + group_lines_into_blocks(body_lines) + [footer_lines]
+    for block in [group for group in ordered_groups if group]:
+        if looks_like_table(block):
+            add_table_from_lines(output_doc, block)
+            output_doc.add_paragraph()
+            continue
+        for line in block:
+            text = str(line.get("text", "")).strip()
+            if not text:
+                continue
+            style = None
+            if average_font_size([line]) >= 17 or (line.get("spans") and line["spans"][0].get("bold") and len(text) <= 90):
+                style = "Heading 2"
+            paragraph = output_doc.add_paragraph(style=style)
+            paragraph.alignment = paragraph_alignment(line, page_width)
+            paragraph.paragraph_format.space_before = Pt(1)
+            paragraph.paragraph_format.space_after = Pt(3)
+            if line_is_list_item(text):
+                paragraph.style = "List Bullet"
+            add_line_runs(paragraph, line)
+
+
+def layout_confidence(metadata: dict[str, Any], all_lines: list[list[dict[str, Any]]], high_fidelity: bool) -> float:
+    page_count = max(1, int(metadata.get("page_count", 1)))
+    failed = len(metadata.get("ocr_failed_pages", [])) + len(metadata.get("image_fallback_pages", []))
+    text_pages = len(metadata.get("text_pages", []))
+    line_count = sum(len(page_lines) for page_lines in all_lines)
+    base = 0.68
+    if text_pages:
+        base += 0.18 * (text_pages / page_count)
+    if metadata.get("ocr_engine") == "paddleocr":
+        base += 0.1
+    if high_fidelity:
+        base += 0.04
+    if line_count < page_count * 3:
+        base -= 0.2
+    base -= 0.18 * (failed / page_count)
+    return max(0.05, min(base, 0.98))
+
+
 def collect_page_text_blocks(page: fitz.Page, metadata: dict[str, Any], page_index: int) -> list[str]:
     if page_has_selectable_text(page):
         metadata["text_pages"].append(page_index)
@@ -629,16 +957,41 @@ def collect_page_text_blocks(page: fitz.Page, metadata: dict[str, Any], page_ind
     return blocks
 
 
-def pdf_to_docx_bytes(data: bytes) -> tuple[bytes, dict[str, Any]]:
-    document = fitz.open(stream=data, filetype="pdf")
+def image_to_pdf_document(data: bytes) -> fitz.Document:
+    image = Image.open(io.BytesIO(data))
+    image.load()
+    width_px, height_px = image.size
+    page_width = 612.0
+    page_height = max(180.0, page_width * height_px / max(1, width_px))
+    image_stream = io.BytesIO()
+    image.convert("RGB").save(image_stream, format="PNG")
+    document = fitz.open()
+    page = document.new_page(width=page_width, height=page_height)
+    page.insert_image(page.rect, stream=image_stream.getvalue())
+    return document
+
+
+def source_to_fitz_document(data: bytes, extension: str) -> fitz.Document:
+    if extension == ".pdf":
+        return fitz.open(stream=data, filetype="pdf")
+    if extension in IMAGE_EXTENSIONS:
+        return image_to_pdf_document(data)
+    raise HTTPException(415, f"Unsupported file type: {extension or 'unknown'}")
+
+
+def pdf_to_docx_bytes(data: bytes, extension: str = ".pdf", high_fidelity: bool = False) -> tuple[bytes, dict[str, Any]]:
+    document = source_to_fitz_document(data, extension)
     metadata = {
         "text_pages": [],
         "ocr_pages": [],
         "ocr_failed_pages": [],
         "image_fallback_pages": [],
         "page_count": 0,
-        "layout_mode": "editable_positioned_text",
+        "layout_mode": "high_fidelity_editable_textboxes" if high_fidelity else "editable_document_reconstruction",
+        "ocr_engine": "none",
+        "high_fidelity": high_fidelity,
     }
+    all_page_lines: list[list[dict[str, Any]]] = []
     try:
         output_doc = Document()
         if document.page_count:
@@ -647,18 +1000,19 @@ def pdf_to_docx_bytes(data: bytes) -> tuple[bytes, dict[str, Any]]:
             section = output_doc.sections[0]
             section.page_width = Inches(first_rect.width / 72)
             section.page_height = Inches(first_rect.height / 72)
-            section.top_margin = Inches(0)
-            section.bottom_margin = Inches(0)
-            section.left_margin = Inches(0)
-            section.right_margin = Inches(0)
+            margin = 0 if high_fidelity else 0.45
+            section.top_margin = Inches(margin)
+            section.bottom_margin = Inches(margin)
+            section.left_margin = Inches(margin)
+            section.right_margin = Inches(margin)
             section.header_distance = Inches(0)
             section.footer_distance = Inches(0)
         styles = output_doc.styles
         normal = styles["Normal"]
         normal.font.name = "Arial"
-        normal.font.size = Pt(1)
+        normal.font.size = Pt(10)
         normal.paragraph_format.space_before = Pt(0)
-        normal.paragraph_format.space_after = Pt(0)
+        normal.paragraph_format.space_after = Pt(3)
         normal.paragraph_format.line_spacing = 1
         metadata["page_count"] = document.page_count
         shape_id = 1
@@ -668,19 +1022,27 @@ def pdf_to_docx_bytes(data: bytes) -> tuple[bytes, dict[str, Any]]:
             if page_has_selectable_text(page):
                 metadata["text_pages"].append(page_index)
                 lines = editable_pdf_lines(page)
+                confidence = 0.94
             else:
                 metadata["ocr_pages"].append(page_index)
-                lines, ocr_error = tesseract_ocr_page_lines(page)
+                lines, ocr_error, confidence = ocr_page_lines(page, metadata)
                 if ocr_error:
                     metadata["ocr_failed_pages"].append(page_index)
             if not lines:
                 metadata["image_fallback_pages"].append(page_index)
                 note = output_doc.add_paragraph("[PDFSnitch could not detect editable text on this page.]")
                 note.runs[0].font.size = Pt(10)
+                all_page_lines.append([])
                 continue
-            shape_id = add_editable_page(output_doc, page, lines, shape_id)
+            all_page_lines.append(lines)
+            if high_fidelity:
+                shape_id = add_editable_page(output_doc, page, lines, shape_id)
+            else:
+                add_structured_page(output_doc, lines, page.rect.width, page.rect.height)
+            metadata.setdefault("page_confidences", []).append(round(confidence, 3))
     finally:
         document.close()
+    metadata["layout_confidence"] = round(layout_confidence(metadata, all_page_lines, high_fidelity), 3)
     output = io.BytesIO()
     output_doc.save(output)
     return output.getvalue(), metadata
@@ -693,7 +1055,7 @@ def health():
 
 @app.get("/api/ocr-status")
 def ocr_status():
-    return tesseract_status()
+    return {"paddleocr": paddle_ocr_status(), "tesseract": tesseract_status()}
 
 
 @app.post("/api/preview")
@@ -796,16 +1158,21 @@ async def word_to_pdf(file: UploadFile = File(...)):
 
 
 @app.post("/api/pdf-to-word")
-async def pdf_to_word(file: UploadFile = File(...)):
-    data, filename = await read_upload(file, PDF_EXTENSIONS)
-    converted, metadata = pdf_to_docx_bytes(data)
+async def pdf_to_word(file: UploadFile = File(...), high_fidelity: bool = Form(False)):
+    allowed_extensions = PDF_EXTENSIONS | IMAGE_EXTENSIONS
+    data, filename = await read_upload(file, allowed_extensions)
+    extension = Path(filename).suffix.lower()
+    converted, metadata = await run_in_threadpool(pdf_to_docx_bytes, data, extension, high_fidelity)
     headers = {
         "X-PDFSNITCH-Text-Pages": ",".join(map(str, metadata["text_pages"])),
         "X-PDFSNITCH-OCR-Pages": ",".join(map(str, metadata["ocr_pages"])),
         "X-PDFSNITCH-OCR-Failed-Pages": ",".join(map(str, metadata["ocr_failed_pages"])),
         "X-PDFSNITCH-Image-Fallback-Pages": ",".join(map(str, metadata["image_fallback_pages"])),
-        "X-PDFSNITCH-Layout-Mode": str(metadata.get("layout_mode", "exact_visual")),
-        "Access-Control-Expose-Headers": "Content-Disposition, X-PDFSNITCH-Text-Pages, X-PDFSNITCH-OCR-Pages, X-PDFSNITCH-OCR-Failed-Pages, X-PDFSNITCH-Image-Fallback-Pages, X-PDFSNITCH-Layout-Mode",
+        "X-PDFSNITCH-Layout-Mode": str(metadata.get("layout_mode", "editable_document_reconstruction")),
+        "X-PDFSNITCH-Layout-Confidence": str(metadata.get("layout_confidence", 0)),
+        "X-PDFSNITCH-OCR-Engine": str(metadata.get("ocr_engine", "none")),
+        "X-PDFSNITCH-High-Fidelity": "1" if metadata.get("high_fidelity") else "0",
+        "Access-Control-Expose-Headers": "Content-Disposition, X-PDFSNITCH-Text-Pages, X-PDFSNITCH-OCR-Pages, X-PDFSNITCH-OCR-Failed-Pages, X-PDFSNITCH-Image-Fallback-Pages, X-PDFSNITCH-Layout-Mode, X-PDFSNITCH-Layout-Confidence, X-PDFSNITCH-OCR-Engine, X-PDFSNITCH-High-Fidelity",
     }
     return attachment(
         converted,

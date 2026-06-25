@@ -30,7 +30,7 @@ const tools = [
   { slug: 'pdf-to-images', name: 'PDF to Images', desc: 'Export crisp PNG or JPG files.', icon: FileImage, accept: '.pdf' },
   { slug: 'images-to-pdf', name: 'Images to PDF', desc: 'Build one PDF from JPG, PNG or WebP.', icon: ImagePlus, accept: 'image/png,image/jpeg,image/webp', multiple: true },
   { slug: 'word-to-pdf', name: 'Word to PDF', desc: 'Convert DOCX documents into downloadable PDFs.', icon: FileText, accept: '.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
-  { slug: 'pdf-to-word', name: 'PDF to Word', desc: 'Preserve PDF layout in a DOCX file.', icon: FileOutput, accept: '.pdf' },
+  { slug: 'pdf-to-word', name: 'PDF to Word', desc: 'Preserve PDF and image layouts in an editable DOCX file.', icon: FileOutput, accept: '.pdf,image/png,image/jpeg,image/webp' },
   { slug: 'delete-pages', name: 'Delete PDF Pages', desc: 'Remove selected pages and keep the rest.', icon: Trash2, accept: '.pdf' },
   { slug: 'watermark', name: 'Watermark', desc: 'Add controlled text marks across pages.', icon: FileOutput, accept: '.pdf' },
   { slug: 'protect', name: 'Protect PDF', desc: 'Lock sensitive documents with a password.', icon: FileLock2, accept: '.pdf' },
@@ -424,7 +424,7 @@ function ToolControls({ slug, options, update }) {
   if (slug === 'pdf-to-images') return <div className="tool-config"><h2>Image export</h2><div className="config-row"><button className={options.format === 'png' ? 'config-choice is-active' : 'config-choice'} type="button" onClick={() => update('format', 'png')}>PNG</button><button className={options.format === 'jpg' ? 'config-choice is-active' : 'config-choice'} type="button" onClick={() => update('format', 'jpg')}>JPG</button></div><label>Resolution<select className="text-field" value={options.dpi} onChange={event => update('dpi', event.target.value)}><option value="72">72 ppi</option><option value="150">150 ppi</option><option value="300">300 ppi</option></select></label></div>
   if (slug === 'images-to-pdf') return <div className="tool-config"><h2>PDF output</h2><p>Images are kept in the selected order and converted at high quality.</p></div>
   if (slug === 'word-to-pdf') return <div className="tool-config"><h2>Word conversion</h2><p>Upload a .docx file. The backend converts readable text and basic tables into a PDF.</p></div>
-  if (slug === 'pdf-to-word') return <div className="tool-config"><h2>Word output</h2><p>The DOCX keeps each PDF page visually aligned with the original layout, fonts, sizes and spacing. OCR text is added when available without disturbing the page design.</p></div>
+  if (slug === 'pdf-to-word') return <div className="tool-config"><h2>Editable Word reconstruction</h2><p>PaddleOCR reads scanned/image pages while selectable PDFs use direct text extraction. PDFSnitch rebuilds paragraphs, tables, spacing and approximate font sizes as editable DOCX content.</p><label className="toggle-line"><input type="checkbox" checked={options.highFidelity} onChange={event => update('highFidelity', event.target.checked)} /> High Fidelity Mode (Beta)</label><p className="tool-note">Complex designs, decorative fonts, and heavily styled documents may not be reproduced with 100% visual accuracy.</p></div>
   if (slug === 'delete-pages') return <div className="tool-config"><h2>Pages to delete</h2><p>{options.pages.length ? `${options.pages.length} page${options.pages.length > 1 ? 's' : ''} selected: ${options.pages.join(', ')}` : 'Select pages in the preview above.'}</p></div>
   if (slug === 'watermark') return <div className="tool-config"><h2>Watermark settings</h2><input className="text-field" aria-label="Watermark text" value={options.text} onChange={event => update('text', event.target.value)} placeholder="Watermark text" /><label>Opacity: {options.opacity}%<input type="range" min="10" max="100" value={options.opacity} onChange={event => update('opacity', event.target.value)} /></label></div>
   if (slug === 'protect') return <div className="tool-config"><h2>Set a password</h2><input className="text-field" type="password" aria-label="Password" value={options.password} onChange={event => update('password', event.target.value)} placeholder="At least 6 characters" /><input className="text-field" type="password" aria-label="Confirm password" value={options.confirmPassword} onChange={event => update('confirmPassword', event.target.value)} placeholder="Confirm password" /></div>
@@ -437,7 +437,7 @@ function ToolPage({ slug }) {
   const [files, setFiles] = useState([])
   const [status, setStatus] = useState('idle')
   const [hasEdits, setHasEdits] = useState(false)
-  const [options, setOptions] = useState({ mode: 'ranges', ranges: '1', degrees: '90', format: 'png', dpi: '150', pages: [], text: '', opacity: '35', password: '', confirmPassword: '' })
+  const [options, setOptions] = useState({ mode: 'ranges', ranges: '1', degrees: '90', format: 'png', dpi: '150', pages: [], text: '', opacity: '35', password: '', confirmPassword: '', highFidelity: false })
   const [preview, setPreview] = useState(null)
   const [resultPreview, setResultPreview] = useState(null)
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -455,6 +455,8 @@ function ToolPage({ slug }) {
   const previewRoutes = ['split', 'delete-pages', 'pdf-to-images', 'pdf-to-word']
   const loadPreview = async file => {
     if (!file || !previewRoutes.includes(slug)) return
+    const isPdfFile = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+    if (slug === 'pdf-to-word' && !isPdfFile) return
     setPreviewLoading(true)
     setPreview(null)
     try {
@@ -490,6 +492,7 @@ function ToolPage({ slug }) {
     if (slug === 'split') return { mode: options.mode, ranges: options.ranges }
     if (slug === 'rotate') return { degrees: options.degrees }
     if (slug === 'pdf-to-images') return { format: options.format, dpi: options.dpi }
+    if (slug === 'pdf-to-word') return { high_fidelity: options.highFidelity }
     if (slug === 'delete-pages') return { pages: options.pages.join(',') }
     if (slug === 'watermark') return { text: options.text, opacity: options.opacity }
     if (slug === 'protect' || slug === 'unlock') return { password: options.password }
@@ -515,7 +518,9 @@ function ToolPage({ slug }) {
     }
   }
   const download = () => { downloadBlob(result?.blob, result?.filename); trackEvent('download_click', { filename: result?.filename, tool: slug }); setDirty(false) }
-  const processingLabel = slug === 'pdf-to-word' ? 'Reading PDF content?' : 'Processing securely?'
+  const layoutConfidence = result?.headers?.get('x-pdfsnitch-layout-confidence')
+  const ocrEngine = result?.headers?.get('x-pdfsnitch-ocr-engine')
+  const processingLabel = slug === 'pdf-to-word' ? 'Reading document content?' : 'Processing securely?'
   return <div className="tool-page"><ToolHeader /><main className="tool-page__main container">
     <input ref={inputRef} className="sr-only" type="file" accept={tool.accept} multiple={tool.multiple} onChange={onFiles} aria-label={`Choose files for ${tool.name}`} />
     <div className="tool-page__title"><Icon /><h1>{tool.name}</h1><p>{tool.desc}</p></div>
@@ -524,8 +529,9 @@ function ToolPage({ slug }) {
       <PreviewSection files={files} onRemove={removeFile} onAdd={choose} mergeMode={slug === 'merge'} />
       {previewRoutes.includes(slug) ? <PagePreviewGrid preview={preview} loading={previewLoading} selectedPages={options.pages} onToggle={togglePage} selectable={slug === 'delete-pages'} /> : null}
       <ToolControls slug={slug} options={options} update={updateOptions} />
-      {status === 'processing' && slug === 'pdf-to-word' ? <div className="tool-message tool-message--info" role="status">Rebuilding the PDF layout in Word. Running OCR on scanned pages when required. Please wait until the Word file is ready.</div> : null}
+      {status === 'processing' && slug === 'pdf-to-word' ? <div className="tool-message tool-message--info" role="status">Reading PDF content… Running PaddleOCR on scanned/image pages when required. Reconstructing an editable Word layout now.</div> : null}
       {error ? <div className="tool-message tool-message--error" role="alert">{error}</div> : null}
+      {status === 'done' && slug === 'pdf-to-word' && layoutConfidence ? <div className="tool-message tool-message--info" role="status">Layout confidence: {Math.round(Number(layoutConfidence) * 100)}%{ocrEngine ? ` · OCR engine: ${ocrEngine}` : ''}. Complex designs, decorative fonts, and heavily styled documents may not be reproduced with 100% visual accuracy.</div> : null}
       {resultPreview ? <div className="result-preview"><PagePreviewGrid preview={resultPreview} loading={false} selectedPages={[]} onToggle={() => {}} /><strong>Result preview updated successfully.</strong></div> : null}
       <div className="tool-action"><button className="btn btn--primary" disabled={!canProcess || status === 'processing'} onClick={process}>{status === 'done' ? <Check /> : status === 'processing' ? <LoaderCircle className="spin-icon" /> : <Icon />}{status === 'processing' ? 'Processing securely…' : status === 'done' ? 'Process again' : slug === 'merge' && files.length < 2 ? 'Add at least 2 PDFs' : slug === 'delete-pages' && !options.pages.length ? 'Select pages to delete' : tool.name}</button>{result ? <button className="btn btn--outline" type="button" onClick={download}><Download />Download {result.filename}</button> : null}<small><ShieldCheck />Temporary files are deleted automatically</small></div>
     </div>}
