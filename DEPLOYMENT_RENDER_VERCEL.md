@@ -173,7 +173,7 @@ Also test:
 https://pdfsnitch-izhk.onrender.com/api/public/settings
 ```
 
-Make sure `apiBaseUrl` shows your Render URL, not `127.0.0.1`.
+Make sure `apiBaseUrl` shows your Render URL.
 
 ## 6. Deploy frontend on Vercel
 
@@ -321,7 +321,7 @@ PDFSNITCH_FRONTEND_ORIGINS=https://pdfsnitch.vercel.app
 
 Then restart/redeploy backend.
 
-### Public settings still show localhost
+### Public settings show the wrong backend URL
 
 Set Render:
 

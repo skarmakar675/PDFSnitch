@@ -300,7 +300,7 @@ def public_api_base_url(settings: dict[str, Any], request: Request | None = None
     if env_url:
         return env_url
     configured = str(settings.get("api_base_url", "")).strip().rstrip("/")
-    if configured and "127.0.0.1" not in configured and "localhost" not in configured:
+    if configured:
         return configured
     if request:
         return str(request.base_url).rstrip("/")
@@ -924,7 +924,7 @@ def system_check(_admin: dict[str, Any] = Depends(require_admin)):
         "uploadFolderStatus": UPLOAD_DIR.exists(),
         "mediaFolderStatus": MEDIA_DIR.exists(),
         "exportFolderStatus": EXPORT_DIR.exists(),
-        "frontendUrl": "http://127.0.0.1:5173",
+        "frontendUrl": "https://pdfsnitch.vercel.app",
         "backendUrl": settings["api_base_url"],
         "backendStatus": api_status(),
     }

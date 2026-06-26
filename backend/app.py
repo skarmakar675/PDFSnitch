@@ -52,7 +52,7 @@ DOCX_EXTENSIONS = {".docx"}
 app = FastAPI(title="PDFSnitch API", version="1.0.0")
 origins = [item.strip() for item in os.getenv(
     "PDFSNITCH_FRONTEND_ORIGINS",
-    "http://127.0.0.1:4173,http://localhost:4173,http://127.0.0.1:5173,http://localhost:5173",
+    "https://pdfsnitch.vercel.app",
 ).split(",") if item.strip()]
 origin_regex = os.getenv("PDFSNITCH_FRONTEND_ORIGIN_REGEX", r"https://.*\.vercel\.app").strip() or None
 app.add_middleware(
